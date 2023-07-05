@@ -120,11 +120,7 @@ public interface VehicleOperatingSystem
      * @param vehicleStopMode Stop mode
      * @param durationInNs    Duration of the stop, unit: [ns]
      */
-<<<<<<< HEAD
-    void stopNow(VehicleStopMode vehicleStopMode, int durationInNs);
-=======
     void stopNow(VehicleStopMode vehicleStopMode, long durationInNs);
->>>>>>> upstream/main
 
     /**
      * Resumes a previously stopped vehicle.

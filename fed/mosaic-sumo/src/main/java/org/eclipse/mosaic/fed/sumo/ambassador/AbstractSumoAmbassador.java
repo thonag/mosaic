@@ -618,7 +618,7 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
                 log.warn("Stop mode {} is not supported", vehicleStop.getVehicleStopMode());
             }
 
-            stopVehicleAt(vehicleStop.getVehicleId(), stopPos, vehicleStop.getVehicleStopMode(), convertTime(vehicleStop.getDuration()));
+            stopVehicleAt(vehicleStop.getVehicleId(), stopPos, vehicleStop.getVehicleStopMode(), vehicleStop.getDuration());
         } catch (InternalFederateException e) {
             log.warn("Vehicle {} could not be stopped", vehicleStop.getVehicleId());
         }
@@ -751,10 +751,6 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
         } catch (NumberFormatException e) {
             throw new InternalFederateException(e);
         }
-    }
-
-    private int convertTime(int time) {
-        return (int) (time / TIME.MILLI_SECOND);
     }
 
     /**
@@ -1213,7 +1209,7 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
         }
 
         // schedule events, e.g. change speed events
-        int scheduled = eventScheduler.scheduleEvents(convertTime((int) time));
+        int scheduled = eventScheduler.scheduleEvents(time);
         log.debug("scheduled {} events at time {}", scheduled, TIME.format(time));
 
         try {
