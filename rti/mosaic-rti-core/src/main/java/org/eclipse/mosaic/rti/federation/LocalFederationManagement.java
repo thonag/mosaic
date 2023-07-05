@@ -15,8 +15,6 @@
 
 package org.eclipse.mosaic.rti.federation;
 
-import ch.qos.logback.classic.LoggerContext;
-import org.apache.commons.lang3.StringUtils;
 import org.eclipse.mosaic.lib.util.ProcessLoggingThread;
 import org.eclipse.mosaic.rti.api.ComponentProvider;
 import org.eclipse.mosaic.rti.api.FederateAmbassador;
@@ -25,6 +23,12 @@ import org.eclipse.mosaic.rti.api.FederationManagement;
 import org.eclipse.mosaic.rti.api.IllegalValueException;
 import org.eclipse.mosaic.rti.api.WatchDog;
 import org.eclipse.mosaic.rti.api.parameters.FederateDescriptor;
+
+import ch.qos.logback.classic.LoggerContext;
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.Multimap;
+import org.apache.commons.io.input.CloseShieldInputStream;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,6 +43,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.Map;
 
 /**
  * This implementation of <code>FederationManagement</code> allows local
@@ -63,12 +68,14 @@ public class LocalFederationManagement implements FederationManagement {
     /**
      * Mapping between federation id and federation descriptors.
      */
-    protected final HashMap<String, FederateDescriptor> federateDescriptors = new HashMap<>();
+    protected final Map<String, FederateDescriptor> federateDescriptors = new HashMap<>();
 
     /**
      * Mapping between federation id and federation ambassador instances.
      */
-    protected final HashMap<String, FederateAmbassador> federateAmbassadors = new HashMap<>();
+    protected final Map<String, FederateAmbassador> federateAmbassadors = new HashMap<>();
+
+    protected final Multimap<String, ProcessLoggingThread> loggingThreads = HashMultimap.create();
 
     protected WatchDog watchDog;
 
@@ -252,26 +259,28 @@ public class LocalFederationManagement implements FederationManagement {
 
         // read error output of process in an extra thread
         ProcessLoggingThread errorLoggingThread = new ProcessLoggingThread(
-                LoggerFactory.getLogger(federateName + "Error"),
-                p.getErrorStream(),
-                federateName,
-                ProcessLoggingThread.Level.Error
+                federateName, p.getErrorStream(), LoggerFactory.getLogger(federateName + "Error")::error
         );
         errorLoggingThread.start();
+        loggingThreads.put(handle.getId(), errorLoggingThread);
 
+        // FIXME: Omnetpp/Ns3 ambassadors must read from the input stream. As we cannot simply split the stream,
+        //        we need to call connectToFederate before starting the ProcessLoggingThread
+        //
         // call connectToFederateMethod of the current federate an extract
         // possible output from the federates' output stream (e.g. port number...)
         // note: error- and input streams were read in this class now due to conflicting stream access
-        handle.getAmbassador().connectToFederate(LOCALHOST, p.getInputStream(), p.getErrorStream());
+        handle.getAmbassador().connectToFederate(LOCALHOST,
+                new CloseShieldInputStream(p.getInputStream()), // prevent streams from closing by ambassador
+                new CloseShieldInputStream(p.getErrorStream())
+        );
 
         // read the federates stdout in an extra thread and add this to our logging instance
         ProcessLoggingThread outputLoggingThread = new ProcessLoggingThread(
-                LoggerFactory.getLogger(federateName + "Output"),
-                p.getInputStream(),
-                federateName,
-                ProcessLoggingThread.Level.Info
+                federateName, p.getInputStream(), LoggerFactory.getLogger(federateName + "Output")::info
         );
         outputLoggingThread.start();
+        loggingThreads.put(handle.getId(), outputLoggingThread);
     }
 
     /**
@@ -283,6 +292,8 @@ public class LocalFederationManagement implements FederationManagement {
     protected void stopFederate(FederateDescriptor handle, boolean forceStop) throws Exception {
         if (handle.getFederateExecutor() != null) {
             handle.getFederateExecutor().stopLocalFederate();
+
+            loggingThreads.get(handle.getId()).forEach(ProcessLoggingThread::close);
         }
     }
 

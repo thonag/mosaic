@@ -43,6 +43,7 @@ import org.eclipse.mosaic.interactions.mapping.TmcRegistration;
 import org.eclipse.mosaic.interactions.mapping.TrafficLightRegistration;
 import org.eclipse.mosaic.interactions.mapping.VehicleRegistration;
 import org.eclipse.mosaic.interactions.mapping.advanced.RoutelessVehicleRegistration;
+import org.eclipse.mosaic.interactions.mapping.advanced.ScenarioVehicleRegistration;
 import org.eclipse.mosaic.interactions.traffic.TrafficDetectorUpdates;
 import org.eclipse.mosaic.interactions.traffic.TrafficLightUpdates;
 import org.eclipse.mosaic.interactions.traffic.VehicleRoutesInitialization;
@@ -202,17 +203,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
 
     @Override
     public void finishSimulation() {
-        try {
-            SimulationKernel.SimulationKernel.setCurrentSimulationTime(this.rti.getNextEventTimestamp());
-
-            log.debug("remaining events: {}", eventScheduler.getAllEvents());
-            UnitSimulator.UnitSimulator.removeAllSimulationUnits();
-
-            log.debug("inform about finishSimulation");
-            SimulationKernel.SimulationKernel.finishSimulation();
-        } catch (IllegalValueException e) {
-            log.error("Could not shutdown applications.", e);
-        }
+        // we already shut down everything in the last simulation step
     }
 
     @Override
@@ -222,9 +213,22 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
             log.trace("subscribedInteractions: {}", Arrays.toString(this.rti.getSubscribedInteractions().toArray()));
         }
         SimulationKernel.SimulationKernel.getCentralNavigationComponent().initialize(this.rti);
-        SimulationKernel.SimulationKernel.getCentralPerceptionComponentComponent().initialize();
+        SimulationKernel.SimulationKernel.getCentralPerceptionComponent().initialize();
         SimulationKernel.SimulationKernel.setInteractable(rti);
         SimulationKernel.SimulationKernel.setRandomNumberGenerator(rti.createRandomNumberGenerator());
+
+        // shutdown remaining simulation units within the simulation time frame
+        SimulationKernel.SimulationKernel.getEventManager()
+                .newEvent(endTime, this::shutdownSimulationUnits)
+                .withNice(EventNicenessPriorityRegister.UNIT_REMOVED)
+                .schedule();
+    }
+
+    private void shutdownSimulationUnits(Event event) {
+        SimulationKernel.SimulationKernel.setCurrentSimulationTime(event.getTime());
+
+        log.debug("remaining events: {}", eventScheduler.getAllEvents());
+        UnitSimulator.UnitSimulator.removeAllSimulationUnits();
     }
 
     @Override
@@ -262,6 +266,8 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                 this.process((TrafficLightRegistration) interaction);
             } else if (interaction.getTypeId().startsWith(VehicleRegistration.TYPE_ID)) {
                 this.process((VehicleRegistration) interaction);
+            } else if (interaction.getTypeId().startsWith(ScenarioVehicleRegistration.TYPE_ID)) {
+                this.process((ScenarioVehicleRegistration) interaction);
             } else if (interaction.getTypeId().startsWith(RoutelessVehicleRegistration.TYPE_ID)) {
                 this.process((RoutelessVehicleRegistration) interaction);
             } else if (interaction.getTypeId().startsWith(TmcRegistration.TYPE_ID)) {
@@ -319,7 +325,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
             final Event event = new Event(
                     vehicleBatteryUpdates.getTime(), simulationUnit,
                     batteryData,
-                    EventNicenessPriorityRegister.batteryUpdated
+                    EventNicenessPriorityRegister.BATTERY_UPDATED
             );
             addEvent(event);
         }
@@ -355,10 +361,22 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
 
     private void process(final TrafficLightRegistration trafficLightRegistration) {
         UnitSimulator.UnitSimulator.registerTrafficLight(trafficLightRegistration);
+        SimulationKernel.SimulationKernel.getCentralPerceptionComponent()
+                .addTrafficLightGroup(trafficLightRegistration.getTrafficLightGroup());
     }
 
     private void process(final VehicleRegistration vehicleRegistration) {
-        vehicleRegistrations.put(vehicleRegistration.getMapping().getName(), vehicleRegistration);
+        String vehicleName = vehicleRegistration.getMapping().getName();
+        vehicleRegistrations.put(vehicleName, vehicleRegistration);
+        // register vehicle type for perception
+        SimulationKernel.SimulationKernel.getCentralPerceptionComponent()
+                .registerVehicleType(vehicleName, vehicleRegistration.getMapping().getVehicleType());
+    }
+
+    private void process(final ScenarioVehicleRegistration scenarioVehicleRegistration) {
+        // register vehicle type for perception, may be overridden later by VehicleRegistration
+        SimulationKernel.SimulationKernel.getCentralPerceptionComponent()
+                .registerVehicleType(scenarioVehicleRegistration.getName(), scenarioVehicleRegistration.getVehicleType());
     }
 
     private void process(final RoutelessVehicleRegistration routelessVehicleRegistration) {
@@ -398,13 +416,13 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                     addEvent(new Event(
                             vehicleSeenTrafficSignsUpdate.getTime(),
                             e -> vehicleSeenTrafficSignsUpdate.getNewSigns(vehicleId).forEach(application::onTrafficSignNoticed),
-                            EventNicenessPriorityRegister.updateSeenTrafficSign
+                            EventNicenessPriorityRegister.UPDATE_SEEN_TRAFFIC_SIGN
 
                     ));
                     addEvent(new Event(
                             vehicleSeenTrafficSignsUpdate.getTime(),
                             e -> vehicleSeenTrafficSignsUpdate.getPassedSigns(vehicleId).forEach(application::onTrafficSignInvalidated),
-                            EventNicenessPriorityRegister.updateSeenTrafficSign
+                            EventNicenessPriorityRegister.UPDATE_SEEN_TRAFFIC_SIGN
                     ));
                 }
             }
@@ -423,7 +441,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                 chargingStationData.getTime(),
                 simulationUnit,
                 chargingStationData,
-                EventNicenessPriorityRegister.updateChargingStation
+                EventNicenessPriorityRegister.UPDATE_CHARGING_STATION
         );
         addEvent(event);
     }
@@ -438,7 +456,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                 vehicleChargingDenial.getTime(),
                 simulationUnit,
                 vehicleChargingDenial,
-                EventNicenessPriorityRegister.chargingRejected
+                EventNicenessPriorityRegister.CHARGING_REJECTED
         );
         addEvent(event);
     }
@@ -463,7 +481,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                 v2xMessageReception.getTime(),
                 simulationUnit,
                 receivedV2xMessage,
-                EventNicenessPriorityRegister.v2xMessageReception
+                EventNicenessPriorityRegister.V2X_MESSAGE_RECEPTION
         );
 
         addEvent(event);
@@ -484,7 +502,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                 v2xFullMessageReception.getTime(),
                 simulationUnit,
                 receivedV2xMessage,
-                EventNicenessPriorityRegister.v2xFullMessageReception
+                EventNicenessPriorityRegister.V2X_FULL_MESSAGE_RECEPTION
         );
         addEvent(event);
     }
@@ -536,7 +554,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                         relevantUpdates.getTime(),
                         tmc,
                         relevantUpdates,
-                        EventNicenessPriorityRegister.updateTrafficDetectors
+                        EventNicenessPriorityRegister.UPDATE_TRAFFIC_DETECTORS
                 );
                 addEvent(event);
             }
@@ -588,7 +606,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
         final Event event = new Event(
                 v2xMessageAcknowledgement.getTime(),
                 simulationUnit, v2xMessageAcknowledgement,
-                EventNicenessPriorityRegister.v2xMessageAcknowledgement
+                EventNicenessPriorityRegister.V2X_MESSAGE_ACKNOWLEDGEMENT
         );
         addEvent(event);
     }
@@ -603,16 +621,16 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                         trafficLightUpdates.getTime(),
                         simulationUnit,
                         trafficLightGroupInfo,
-                        EventNicenessPriorityRegister.updateTrafficLight
+                        EventNicenessPriorityRegister.UPDATE_TRAFFIC_LIGHT
                 );
                 addEvent(event);
             }
         }
-
+        SimulationKernel.SimulationKernel.getCentralPerceptionComponent().updateTrafficLights(trafficLightUpdates);
     }
 
     private void process(final VehicleUpdates vehicleUpdates) {
-        SimulationKernel.SimulationKernel.getCentralPerceptionComponentComponent().updateVehicles(vehicleUpdates);
+        SimulationKernel.SimulationKernel.getCentralPerceptionComponent().updateVehicles(vehicleUpdates);
         // schedule all added vehicles
         for (VehicleData vehicleData : vehicleUpdates.getAdded()) {
             addVehicleIfNotYetAdded(vehicleUpdates.getTime(), vehicleData.getName());
@@ -625,7 +643,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                     vehicleData.getTime(),
                     simulationUnit,
                     vehicleData,
-                    EventNicenessPriorityRegister.vehicleAdded
+                    EventNicenessPriorityRegister.VEHICLE_ADDED
             );
             addEvent(event);
         }
@@ -642,7 +660,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                     vehicleData.getTime(),
                     simulationUnit,
                     vehicleData,
-                    EventNicenessPriorityRegister.vehicleUpdated
+                    EventNicenessPriorityRegister.VEHICLE_UPDATED
             );
             addEvent(event);
         }
@@ -657,7 +675,7 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
                 vehicleUpdates.getTime(),
                 UnitSimulator.UnitSimulator,
                 removeVehicles,
-                EventNicenessPriorityRegister.vehicleRemoved
+                EventNicenessPriorityRegister.VEHICLE_REMOVED
         );
         addEvent(event);
 
@@ -666,7 +684,6 @@ public class ApplicationAmbassador extends AbstractFederateAmbassador implements
          * have no other choice) event, to trigger an internal garbage
          * collection.
          */
-
         final Event triggerGarbageCollection = new Event(
                 vehicleUpdates.getTime(),
                 e -> SimulationKernel.SimulationKernel.garbageCollection());

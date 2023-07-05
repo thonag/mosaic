@@ -8,7 +8,7 @@ kind: Pod
 spec:
   containers:
   - name: maven-sumo
-    image: eclipsemosaic/mosaic-ci:jdk8-sumo-1.13.0
+    image: eclipsemosaic/mosaic-ci:jdk8-sumo-1.16.0
     command:
     - cat
     tty: true
@@ -23,7 +23,7 @@ spec:
         memory: "2Gi"
         cpu: "1"    
   - name: jnlp
-    image: 'eclipsecbijenkins/basic-agent:3.35'
+    image: 'eclipsecbijenkins/basic-agent:3107.v665000b_51092'
     volumeMounts:
     - mountPath: "/home/jenkins/.m2/settings-security.xml"
       name: "settings-security-xml"

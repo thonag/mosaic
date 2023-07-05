@@ -18,68 +18,101 @@ package org.eclipse.mosaic.fed.application.ambassador.simulation.perception;
 import static java.lang.Math.toRadians;
 
 import org.eclipse.mosaic.fed.application.ambassador.SimulationKernel;
-import org.eclipse.mosaic.fed.application.app.api.perception.PerceptionModule;
+import org.eclipse.mosaic.fed.application.ambassador.simulation.perception.index.objects.SpatialObject;
+import org.eclipse.mosaic.fed.application.ambassador.simulation.perception.index.objects.TrafficLightObject;
+import org.eclipse.mosaic.fed.application.ambassador.simulation.perception.index.objects.VehicleObject;
+import org.eclipse.mosaic.lib.database.Database;
 import org.eclipse.mosaic.lib.geo.CartesianPoint;
 import org.eclipse.mosaic.lib.math.MathUtils;
 import org.eclipse.mosaic.lib.math.Vector3d;
 import org.eclipse.mosaic.lib.math.VectorUtils;
 import org.eclipse.mosaic.lib.spatial.BoundingBox;
+import org.eclipse.mosaic.lib.spatial.Edge;
 
 import com.google.common.collect.Lists;
 import org.apache.commons.lang3.Validate;
 import org.slf4j.Logger;
 
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
- * A simplified perception module which detects all vehicles within the defined field of view.
- * No occlusion or error model is considered. The field of view is defined with an opening angle of maximum 180 degrees.
+ * A perception module which detects all vehicles within the defined field of view.
  */
-public class SimplePerceptionModule implements PerceptionModule<SimplePerceptionConfiguration> {
-    private static final double DEFAULT_VIEWING_ANGLE = 40;
-    private static final double DEFAULT_VIEWING_RANGE = 200;
+public class SimplePerceptionModule extends AbstractPerceptionModule {
 
+    private SimplePerceptionModel perceptionModel;
 
-    private final PerceptionModuleOwner owner;
-    private final Logger log;
-
-    private SimplePerception perceptionModel;
-
-    public SimplePerceptionModule(PerceptionModuleOwner owner, Logger log) {
-        this.owner = owner;
-        this.log = log;
+    public SimplePerceptionModule(PerceptionModuleOwner owner, Database database, Logger log) {
+        super(owner, database, log);
     }
 
     @Override
     public void enable(SimplePerceptionConfiguration configuration) {
-        if (configuration == null) {
-            log.warn("Provided perception configuration is null. Using default configuration with viewingAngle={}°, viewingRange={}m.",
-                    DEFAULT_VIEWING_ANGLE, DEFAULT_VIEWING_RANGE);
-            configuration = new SimplePerceptionConfiguration(DEFAULT_VIEWING_ANGLE, DEFAULT_VIEWING_ANGLE);
-        }
-        this.perceptionModel = new SimplePerception(this.owner.getId(), configuration);
+        super.enable(configuration);
+        perceptionModel = new SimplePerceptionModel(owner.getId(), this.configuration);
     }
 
     @Override
-    public List<VehicleObject> getPerceivedVehicles() {
+    List<VehicleObject> getVehiclesInRange() {
         if (perceptionModel == null || owner.getVehicleData() == null) {
             log.warn("No perception model initialized.");
             return Lists.newArrayList();
         }
         perceptionModel.updateOrigin(owner.getVehicleData().getProjectedPosition(), owner.getVehicleData().getHeading());
         // note, the perception index is updated internally only if vehicles have moved since the last call
-        SimulationKernel.SimulationKernel.getCentralPerceptionComponentComponent().updateSpatialIndices();
+        SimulationKernel.SimulationKernel.getCentralPerceptionComponent().updateSpatialIndices();
         // request all vehicles within the area of the field of view
-        return SimulationKernel.SimulationKernel.getCentralPerceptionComponentComponent()
-                .getVehicleIndex()
+        return SimulationKernel.SimulationKernel.getCentralPerceptionComponent()
+                .getTrafficObjectIndex()
                 .getVehiclesInRange(perceptionModel);
+    }
+
+    @Override
+    public List<TrafficLightObject> getTrafficLightsInRange() {
+        if (perceptionModel == null || owner.getVehicleData() == null) {
+            log.warn("No perception model initialized.");
+            return Lists.newArrayList();
+        }
+        perceptionModel.updateOrigin(owner.getVehicleData().getProjectedPosition(), owner.getVehicleData().getHeading());
+        // note, the perception index is updated internally only if vehicles have moved since the last call
+        SimulationKernel.SimulationKernel.getCentralPerceptionComponent().updateSpatialIndices();
+        // request all vehicles within the area of the field of view
+        return SimulationKernel.SimulationKernel.getCentralPerceptionComponent()
+                .getTrafficObjectIndex()
+                .getTrafficLightsInRange(perceptionModel);
+
+    }
+
+    @Override
+    public List<SpatialObject> getObjectsInRange() {
+        if (perceptionModel == null || owner.getVehicleData() == null) {
+            log.warn("No perception model initialized.");
+            return Lists.newArrayList();
+        }
+        perceptionModel.updateOrigin(owner.getVehicleData().getProjectedPosition(), owner.getVehicleData().getHeading());
+        SimulationKernel.SimulationKernel.getCentralPerceptionComponent().updateSpatialIndices();
+        List<SpatialObject> objectsInRange = new ArrayList<>();
+        objectsInRange.addAll(SimulationKernel.SimulationKernel.getCentralPerceptionComponent()
+                .getTrafficObjectIndex()
+                .getVehiclesInRange(perceptionModel));
+        objectsInRange.addAll(SimulationKernel.SimulationKernel.getCentralPerceptionComponent()
+                .getTrafficObjectIndex()
+                .getTrafficLightsInRange(perceptionModel));
+        return objectsInRange;
+    }
+
+    @Override
+    public Collection<Edge<Vector3d>> getSurroundingWalls() {
+        return SimulationKernel.SimulationKernel.getCentralPerceptionComponent().getTrafficObjectIndex().getSurroundingWalls(perceptionModel);
     }
 
     /**
      * Checks whether the pre-selection of vehicles actually fall in the viewing range of the
      * ego vehicle. Note: We use ego-vehicle position as origin.
      */
-    private static class SimplePerception implements PerceptionRange {
+    private static class SimplePerceptionModel implements PerceptionModel {
 
         private final String ownerId;
         private final SimplePerceptionConfiguration configuration;
@@ -104,7 +137,7 @@ public class SimplePerceptionModule implements PerceptionModule<SimplePerception
          */
         private final Vector3d tmpVector2 = new Vector3d();
 
-        SimplePerception(String ownerId, SimplePerceptionConfiguration configuration) {
+        SimplePerceptionModel(String ownerId, SimplePerceptionConfiguration configuration) {
             Validate.isTrue(configuration.getViewingAngle() >= 0 && configuration.getViewingAngle() <= 360,
                     "Only viewing angles from 0 to 360 degrees are supported.");
 

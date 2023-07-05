@@ -8,7 +8,7 @@
             "description": "The Interval after which positions are published. If defined as a number, then the default unit is ms. Alternatively this can be defined as a string to include the unit of measurement (e.g. '1 s'). Define the size of one simulation step in sumo.",
             "anyOf": [
                 { "type": "string", "maxLength": 15 },
-                { "type": "number", "minimum": 100 }
+                { "type": "number", "minimum": 1 }
             ],
             "default": 1000
         },
@@ -43,7 +43,7 @@
             "default": true
         },
         "subscriptions": {
-            "description": "An optional list of subscriptions for each vehicle in the simulation. The less subscriptions given, the faster the simulation. Per default (if this list is set to null), all subscriptions are activated. Please note, that some components expect specific information, such as the road position. If this information is not subscribed, these components may fail.",
+            "description": "An optional list of subscriptions for each vehicle in the simulation. The less subscriptions given, the faster the simulation. Per default (if this list is set to null), all subscriptions are activated. Please note, that some components expect specific information, such as the road position. If this information is not subscribed, these components may fail. Possible values are: [\"roadposition\", \"leader\", \"signals\", \"emissions\", \"trains\"]",
             "type": "array",
             "items": { "type": "string" }
         },

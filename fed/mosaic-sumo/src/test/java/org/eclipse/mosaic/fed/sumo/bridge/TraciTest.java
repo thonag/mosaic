@@ -19,23 +19,27 @@ import static org.eclipse.mosaic.fed.sumo.config.CSumo.SUBSCRIPTION_EMISSIONS;
 import static org.eclipse.mosaic.fed.sumo.config.CSumo.SUBSCRIPTION_LEADER;
 import static org.eclipse.mosaic.fed.sumo.config.CSumo.SUBSCRIPTION_ROAD_POSITION;
 import static org.eclipse.mosaic.fed.sumo.config.CSumo.SUBSCRIPTION_SIGNALS;
+import static org.eclipse.mosaic.fed.sumo.config.CSumo.SUBSCRIPTION_TRAINS;
 import static org.hamcrest.CoreMatchers.is;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.eclipse.mosaic.fed.sumo.bridge.api.complex.SumoLaneChangeMode;
 import org.eclipse.mosaic.fed.sumo.bridge.api.complex.SumoSpeedMode;
 import org.eclipse.mosaic.fed.sumo.bridge.api.complex.TraciSimulationStepResult;
 import org.eclipse.mosaic.fed.sumo.config.CSumo;
+import org.eclipse.mosaic.fed.sumo.junit.SinceSumo;
 import org.eclipse.mosaic.fed.sumo.junit.SinceTraci;
 import org.eclipse.mosaic.fed.sumo.junit.SumoRunner;
 import org.eclipse.mosaic.fed.sumo.junit.SumoTraciRule;
 import org.eclipse.mosaic.interactions.traffic.VehicleUpdates;
 import org.eclipse.mosaic.lib.enums.LaneChangeMode;
 import org.eclipse.mosaic.lib.enums.SpeedMode;
+import org.eclipse.mosaic.lib.enums.VehicleClass;
 import org.eclipse.mosaic.lib.enums.VehicleStopMode;
 import org.eclipse.mosaic.lib.geo.GeoPoint;
 import org.eclipse.mosaic.lib.geo.UtmPoint;
@@ -43,7 +47,9 @@ import org.eclipse.mosaic.lib.geo.UtmZone;
 import org.eclipse.mosaic.lib.junit.GeoProjectionRule;
 import org.eclipse.mosaic.lib.objects.traffic.InductionLoopInfo;
 import org.eclipse.mosaic.lib.objects.trafficlight.TrafficLightGroup;
+import org.eclipse.mosaic.lib.objects.vehicle.PublicTransportData;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleData;
+import org.eclipse.mosaic.lib.objects.vehicle.VehicleType;
 import org.eclipse.mosaic.lib.objects.vehicle.sensor.SensorValue.SensorStatus;
 import org.eclipse.mosaic.rti.TIME;
 import org.eclipse.mosaic.rti.api.InternalFederateException;
@@ -52,7 +58,6 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import org.apache.commons.io.FileUtils;
 import org.junit.Assert;
-import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -67,7 +72,19 @@ public class TraciTest {
 
     private final File scenarioConfig = FileUtils.toFile(getClass().getResource("/sumo-test-scenario/scenario.sumocfg"));
 
-    private final CSumo sumoConfig = new CSumo();
+    private final CSumo sumoConfig = createSumoConfig();
+
+    private static CSumo createSumoConfig() {
+        CSumo config = new CSumo();
+        config.subscriptions = Lists.newArrayList(
+                SUBSCRIPTION_ROAD_POSITION,
+                SUBSCRIPTION_SIGNALS,
+                SUBSCRIPTION_EMISSIONS,
+                SUBSCRIPTION_LEADER,
+                SUBSCRIPTION_TRAINS
+        );
+        return config;
+    }
 
     private final static double MAX_SPEED = 30d;
     private final static double REACTION_TIME = 1.4d;
@@ -85,12 +102,6 @@ public class TraciTest {
     public GeoProjectionRule coordinateTransformationRule = new GeoProjectionRule(
             UtmPoint.eastNorth(UtmZone.from(GeoPoint.lonLat(13.0, 52.0)), -385281.94, 5817994.50)
     );
-
-    @Before
-    public void setup() {
-        sumoConfig.subscriptions =
-                Lists.newArrayList(SUBSCRIPTION_ROAD_POSITION, SUBSCRIPTION_SIGNALS, SUBSCRIPTION_EMISSIONS, SUBSCRIPTION_LEADER);
-    }
 
     @Test
     public void addVehicles() throws Exception {
@@ -134,6 +145,35 @@ public class TraciTest {
     }
 
     @Test
+    public void getVehicleType() throws Exception {
+        final TraciClientBridge traci = traciRule.getTraciClient();
+        final String vehicle = "1";
+
+        // RUN
+        String vehicleTypeId = traci.getVehicleControl().getVehicleTypeId(vehicle);
+        VehicleType type = traci.getVehicleControl().getVehicleType(vehicleTypeId);
+
+        // ASSERT
+        assertEquals(vehicleTypeId, type.getName());
+        assertEquals(5.0, type.getLength(), 0.00001d);
+        assertEquals(1.8, type.getWidth(), 0.00001d);
+        assertEquals(1.5, type.getHeight(), 0.00001d);
+        assertEquals(2.5, type.getMinGap(), 0.00001d);
+        assertEquals(50.0, type.getMaxSpeed(), 0.00001d);
+        assertEquals(1.0, type.getSpeedFactor(), 0.00001d);
+        assertEquals(1.5, type.getAccel(), 0.00001d);
+        assertEquals(4.5, type.getDecel(), 0.00001d);
+        assertEquals(1.0, type.getTau(), 0.00001d);
+        assertEquals(0.5, type.getSigma(), 0.00001d);
+        assertEquals(VehicleClass.Car, type.getVehicleClass());
+
+        assertNull(type.getColor());
+        assertEquals(LaneChangeMode.DEFAULT, type.getLaneChangeMode());
+        assertEquals(SpeedMode.DEFAULT, type.getSpeedMode());
+
+    }
+
+    @Test
     public void stopResumeVehicle() throws Exception {
         final TraciClientBridge traci = traciRule.getTraciClient();
 
@@ -142,7 +182,7 @@ public class TraciTest {
         traci.getSimulationControl().simulateUntil(10 * TIME.SECOND);
 
         // RUN (park)
-        traci.getVehicleControl().stop("veh_0", "1_1_2", 200, 0, Integer.MAX_VALUE, VehicleStopMode.PARK_ON_ROADSIDE);
+        traci.getVehicleControl().stop("veh_0", "1_1_2", 200, 0, Long.MAX_VALUE, VehicleStopMode.PARK_ON_ROADSIDE);
         for (int t = 11; t < 100; t++) {
             traci.getSimulationControl().simulateUntil(t * TIME.SECOND);
         }
@@ -172,7 +212,7 @@ public class TraciTest {
         traci.getSimulationControl().simulateUntil(10 * TIME.SECOND);
 
         // RUN (park) at parking Area
-        traci.getVehicleControl().stop("veh_0", "parkingArea_1_1_2_0_0", 200, 0, Integer.MAX_VALUE, VehicleStopMode.PARK_IN_PARKING_AREA);
+        traci.getVehicleControl().stop("veh_0", "parkingArea_1_1_2_0_0", 200, 0, Long.MAX_VALUE, VehicleStopMode.PARK_IN_PARKING_AREA);
         for (int t = 11; t < 100; t++) {
             traci.getSimulationControl().simulateUntil(t * TIME.SECOND);
         }
@@ -190,6 +230,21 @@ public class TraciTest {
         vehData = traci.getSimulationControl().getLastKnownVehicleData("veh_0");
         assertTrue(vehData.getSpeed() > 0d);
         assertFalse(vehData.isStopped());
+    }
+
+    @Test
+    public void trainInfoIncluded() throws Exception {
+        final TraciClientBridge traci = traciRule.getTraciClient();
+        traci.getSimulationControl().simulateUntil(6 * TIME.SECOND);
+        traci.getSimulationControl().subscribeForVehicle("2", 0L, 25 * TIME.SECOND);
+        // RUN
+        traci.getSimulationControl().simulateUntil(12 * TIME.SECOND);
+        // ASSERT
+        VehicleData vehData = traci.getSimulationControl().getLastKnownVehicleData("2");
+        assertEquals("1_4_3", vehData.getRoadPosition().getConnection().getId());
+        PublicTransportData publicTransportData = (PublicTransportData) vehData.getAdditionalData();
+        assertEquals("bs_0", publicTransportData.getNextStops().get(0).getStoppingPlaceId());
+        assertEquals("testLine", publicTransportData.getLineId());
     }
 
     @Test
@@ -228,7 +283,7 @@ public class TraciTest {
         assertEquals(13.5, traci.getSimulationControl().getLastKnownVehicleData("veh_0").getSpeed(), 1d);
 
         // RUN
-        traci.getVehicleControl().slowDown("veh_0", 3d, 4000 /* ms */);
+        traci.getVehicleControl().slowDown("veh_0", 3d, 4 * TIME.SECOND);
 
         // ASSERT (by checking if slow down speed is reached after given duration)
         traci.getSimulationControl().simulateUntil(9 * TIME.SECOND);
@@ -272,10 +327,10 @@ public class TraciTest {
         final TraciClientBridge traci = traciRule.getTraciClient();
 
         // RUN
-        traci.getRouteControl().addRoute("2", Lists.newArrayList("2_5_2", "1_2_3", "1_3_4"));
+        traci.getRouteControl().addRoute("3", Lists.newArrayList("2_5_2", "1_2_3", "1_3_4"));
 
         // ASSERT (by adding a vehicle on that route
-        traci.getSimulationControl().addVehicle("veh_0", "2", "PKW", "0", "0", "max");
+        traci.getSimulationControl().addVehicle("veh_0", "3", "PKW", "0", "0", "max");
         traci.getSimulationControl().subscribeForVehicle("veh_0", 0L, 4000 * TIME.SECOND);
 
         // ASSERT (by checking if vehicle is first edge on route)
@@ -395,7 +450,7 @@ public class TraciTest {
         }
     }
 
-    @SinceTraci(TraciVersion.API_20)
+    @SinceSumo(SumoVersion.SUMO_1_14_x)
     @Test
     public void testEmissionsAndFuelConsumptionCalculation() throws Exception {
         // SETUP
@@ -413,12 +468,12 @@ public class TraciTest {
 
         // ASSERT (for emission class HBEFA3/PC_G_EU4: http://sumo.dlr.de/wiki/Models/Emissions/HBEFA3-based)
         double per1kmFactor = 1000 / vehData.getDistanceDriven();
-        assertEquals(54.5, vehData.getVehicleConsumptions().getAllConsumptions().getFuel() * per1kmFactor, 1d);
+        assertEquals(69, vehData.getVehicleConsumptions().getAllConsumptions().getFuel() * per1kmFactor, 1d);
         assertEquals(490, vehData.getVehicleEmissions().getAllEmissions().getCo() * per1kmFactor, 2d);
-        assertEquals(126800, vehData.getVehicleEmissions().getAllEmissions().getCo2() * per1kmFactor, 100d);
+        assertEquals(161000, vehData.getVehicleEmissions().getAllEmissions().getCo2() * per1kmFactor, 100d);
         assertEquals(4.7, vehData.getVehicleEmissions().getAllEmissions().getHc() * per1kmFactor, 1d);
-        assertEquals(43.9, vehData.getVehicleEmissions().getAllEmissions().getNox() * per1kmFactor, 1d);
-        assertEquals(1.23, vehData.getVehicleEmissions().getAllEmissions().getPmx() * per1kmFactor, 0.1d);
+        assertEquals(52, vehData.getVehicleEmissions().getAllEmissions().getNox() * per1kmFactor, 1d);
+        assertEquals(1.35, vehData.getVehicleEmissions().getAllEmissions().getPmx() * per1kmFactor, 0.1d);
     }
 
     /**

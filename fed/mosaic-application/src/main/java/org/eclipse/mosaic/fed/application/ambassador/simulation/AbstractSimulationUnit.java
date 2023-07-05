@@ -80,6 +80,8 @@ public abstract class AbstractSimulationUnit implements EventProcessor, Operatin
     @Nonnull
     private final String id;
 
+    private String group;
+
     /**
      * Position of the unit.
      */
@@ -130,6 +132,11 @@ public abstract class AbstractSimulationUnit implements EventProcessor, Operatin
         this.initialPosition = initialPosition;
     }
 
+    public AbstractSimulationUnit setGroup(String vehicleGroup) {
+        this.group = vehicleGroup;
+        return this;
+    }
+
     @Nonnull
     @Override
     public final String getId() {
@@ -146,8 +153,8 @@ public abstract class AbstractSimulationUnit implements EventProcessor, Operatin
      */
     public final boolean preProcessEvent(final Event event) {
         final Object resource = event.getResource();
-        if (osLog.isDebugEnabled()) {
-            osLog.debug("#preProcessEvent at simulation time {} with resource class {} and nice {}",
+        if (osLog.isTraceEnabled()) {
+            osLog.trace("#preProcessEvent at simulation time {} with resource class {} and nice {}",
                     TIME.format(event.getTime()), event.getResourceClassSimpleName(), event.getNice());
         }
         // failsafe
@@ -236,10 +243,17 @@ public abstract class AbstractSimulationUnit implements EventProcessor, Operatin
             application.tearDown();
         }
         applications.clear();
+
+        if (cellModule.isEnabled()) {
+            cellModule.disable();
+        }
+        if (adhocModule.isEnabled()) {
+            adhocModule.disable();
+        }
     }
 
     protected void setUp() {
-        osLog.debug("#tearUp at simulation time {}", TIME.format(getSimulationTime()));
+        osLog.debug("#setUp at simulation time {}", TIME.format(getSimulationTime()));
         for (AbstractApplication<?> application : getApplicationsIterator(AbstractApplication.class)) {
             // create a new logger for each application and call the syscallSetUp method
             application.setUp(this, new UnitLoggerImpl(id, application.getClass().getSimpleName()));
@@ -252,7 +266,7 @@ public abstract class AbstractSimulationUnit implements EventProcessor, Operatin
      * @param applicationClassNames list of application class names
      */
     public final void loadApplications(List<String> applicationClassNames) {
-
+        osLog.debug("#loadApplications {} at simulation time {}", applicationClassNames, TIME.format(getSimulationTime()));
         final ClassNameParser classNameParser = new ClassNameParser(osLog, SimulationKernel.SimulationKernel.getClassLoader());
 
         // iterate over all class names
@@ -278,10 +292,10 @@ public abstract class AbstractSimulationUnit implements EventProcessor, Operatin
                             throw new RuntimeException(ErrorRegister.SIMULATION_UNIT_IsNotAssignableFrom.toString());
                         }
                     } else {
-                        osLog.warn("Could not check operating system of Application. Skipping check.");
+                        osLog.debug("Could not check operating system of Application. Skipping check.");
                     }
                 } catch (ClassNotFoundException e) {
-                    osLog.warn("Check for operating system of Application failed. Skipping check.", e);
+                    osLog.debug("Check for operating system of Application failed. Skipping check.", e);
                 }
             }
 
@@ -489,5 +503,10 @@ public abstract class AbstractSimulationUnit implements EventProcessor, Operatin
 
     public boolean canProcessEvent() {
         return true;
+    }
+
+    @Override
+    public String getGroup() {
+        return group;
     }
 }

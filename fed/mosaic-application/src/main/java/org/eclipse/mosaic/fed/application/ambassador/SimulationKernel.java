@@ -18,7 +18,6 @@ package org.eclipse.mosaic.fed.application.ambassador;
 import org.eclipse.mosaic.fed.application.ambassador.navigation.CentralNavigationComponent;
 import org.eclipse.mosaic.fed.application.ambassador.simulation.AbstractSimulationUnit;
 import org.eclipse.mosaic.fed.application.ambassador.simulation.perception.CentralPerceptionComponent;
-import org.eclipse.mosaic.fed.application.ambassador.util.FinishSimulationCallback;
 import org.eclipse.mosaic.fed.application.config.CApplicationAmbassador;
 import org.eclipse.mosaic.interactions.communication.V2xMessageRemoval;
 import org.eclipse.mosaic.lib.math.RandomNumberGenerator;
@@ -31,19 +30,25 @@ import org.eclipse.mosaic.rti.api.IllegalValueException;
 import org.eclipse.mosaic.rti.api.Interactable;
 import org.eclipse.mosaic.rti.api.InternalFederateException;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.LoggerContext;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.Appender;
+import ch.qos.logback.core.FileAppender;
 import edu.umd.cs.findbugs.annotations.SuppressWarnings;
+import org.slf4j.LoggerFactory;
 
 import java.io.File;
-import java.util.ArrayList;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
-public enum SimulationKernel implements FinishSimulationCallback {
+public enum SimulationKernel {
 
     SimulationKernel;
 
@@ -56,16 +61,6 @@ public enum SimulationKernel implements FinishSimulationCallback {
 
     private ClassLoader classLoader;
     private transient RandomNumberGenerator randomNumberGenerator;
-    private final List<FinishSimulationCallback> finishSimulationCallbacks = new ArrayList<>();
-
-    /**
-     * Returns the list to register on a finish simulation event.
-     *
-     * @return the list.
-     */
-    public List<FinishSimulationCallback> getFinishSimulationCallbackList() {
-        return finishSimulationCallbacks;
-    }
 
     /**
      * The current simulation time. Unit: [ns].
@@ -261,7 +256,7 @@ public enum SimulationKernel implements FinishSimulationCallback {
         this.centralPerceptionComponent = centralPerceptionComponent;
     }
 
-    public CentralPerceptionComponent getCentralPerceptionComponentComponent() {
+    public CentralPerceptionComponent getCentralPerceptionComponent() {
         if (centralPerceptionComponent == null) {
             throw new RuntimeException(ErrorRegister.SIMULATION_KERNEL_CentralPerceptionComponentNotSet.toString());
         }
@@ -331,6 +326,21 @@ public enum SimulationKernel implements FinishSimulationCallback {
         this.eventManager = eventManager;
     }
 
+    /**
+     * Convenience method to determine the current path of the log files generated for this simulation.
+     * Returns the current working directory if no suitable appender could be found.
+     */
+    public Path getMainLogDirectory() {
+        LoggerContext context = (LoggerContext) LoggerFactory.getILoggerFactory();
+        for (Logger logger : context.getLoggerList()) {
+            Appender<ILoggingEvent> appender = logger.getAppender("ApplicationLog");
+            if (appender instanceof FileAppender) {
+                FileAppender<?> fileAppender = ((FileAppender<?>) appender);
+                return new File(fileAppender.getFile()).toPath().getParent();
+            }
+        }
+        return Paths.get("");
+    }
 
     void garbageCollection() {
         if (interactable == null) {
@@ -363,13 +373,6 @@ public enum SimulationKernel implements FinishSimulationCallback {
                     throw new RuntimeException(ex);
                 }
             }
-        }
-    }
-
-    @Override
-    public void finishSimulation() {
-        for (FinishSimulationCallback cb : finishSimulationCallbacks) {
-            cb.finishSimulation();
         }
     }
 }

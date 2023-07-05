@@ -32,12 +32,14 @@ import org.eclipse.mosaic.interactions.mapping.ServerRegistration;
 import org.eclipse.mosaic.interactions.mapping.TmcRegistration;
 import org.eclipse.mosaic.interactions.mapping.TrafficLightRegistration;
 import org.eclipse.mosaic.interactions.mapping.VehicleRegistration;
+import org.eclipse.mosaic.interactions.traffic.TrafficLightSubscription;
 import org.eclipse.mosaic.lib.enums.VehicleClass;
 import org.eclipse.mosaic.lib.geo.GeoPoint;
 import org.eclipse.mosaic.lib.objects.traffic.SumoTraciResult;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleType;
 import org.eclipse.mosaic.lib.util.scheduling.Event;
 import org.eclipse.mosaic.lib.util.scheduling.EventProcessor;
+import org.eclipse.mosaic.rti.api.Interaction;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -270,8 +272,12 @@ public enum UnitSimulator implements EventProcessor {
         }
         String rsuName = rsuRegistration.getMapping().getName();
         GeoPoint rsuPosition = rsuRegistration.getMapping().getPosition();
+
         final RoadSideUnit roadSideUnit = new RoadSideUnit(rsuName, rsuPosition);
+        roadSideUnit.setGroup(rsuRegistration.getMapping().getGroup());
+
         addSimulationUnit(roadSideUnit);
+
         doSensorRegistration(rsuRegistration.getTime(), roadSideUnit.getId());
 
         final Event event = new Event(
@@ -294,6 +300,8 @@ public enum UnitSimulator implements EventProcessor {
             return;
         }
         final TrafficManagementCenterUnit tmc = new TrafficManagementCenterUnit(tmcRegistration.getMapping());
+        tmc.setGroup(tmcRegistration.getMapping().getGroup());
+
         addSimulationUnit(tmc);
         // doSensorRegistration(tmcRegistration.getTime(), tmc.getId());
 
@@ -315,6 +323,8 @@ public enum UnitSimulator implements EventProcessor {
             return;
         }
         final ServerUnit server = new ServerUnit(serverRegistration.getMapping());
+        server.setGroup(serverRegistration.getMapping().getGroup());
+
         addSimulationUnit(server);
 
         final Event event = new Event(
@@ -337,7 +347,10 @@ public enum UnitSimulator implements EventProcessor {
         }
         String name = chargingStationRegistration.getMapping().getName();
         GeoPoint position = chargingStationRegistration.getMapping().getPosition();
+
         final ChargingStationUnit chargingStationUnit = new ChargingStationUnit(name, position);
+        chargingStationUnit.setGroup(chargingStationRegistration.getMapping().getGroup());
+
         addSimulationUnit(chargingStationUnit);
         doSensorRegistration(chargingStationRegistration.getTime(), chargingStationUnit.getId());
 
@@ -356,14 +369,22 @@ public enum UnitSimulator implements EventProcessor {
      * @param trafficLightRegistration traffic light
      */
     public void registerTrafficLight(TrafficLightRegistration trafficLightRegistration) {
-        if (!trafficLightRegistration.getMapping().hasApplication()) {
+        if (!trafficLightRegistration.getMapping().hasApplication()
+                && SimulationKernel.SimulationKernel.getConfiguration().perceptionConfiguration.trafficLightIndex == null) {
             return;
         }
+
         final TrafficLightGroupUnit trafficLightGroupUnit = new TrafficLightGroupUnit(
                 trafficLightRegistration.getMapping().getName(),
                 trafficLightRegistration.getMapping().getPosition(),
                 trafficLightRegistration.getTrafficLightGroup()
         );
+        Interaction trafficLightSubscription = new TrafficLightSubscription(trafficLightRegistration.getTime(),
+                trafficLightRegistration.getTrafficLightGroup().getGroupId());
+        log.info("Sending TrafficLightSubscription: {}", trafficLightSubscription);
+        trafficLightGroupUnit.sendInteractionToRti(trafficLightSubscription);
+        trafficLightGroupUnit.setGroup(trafficLightRegistration.getMapping().getGroup());
+
         addSimulationUnit(trafficLightGroupUnit);
         doSensorRegistration(trafficLightRegistration.getTime(), trafficLightGroupUnit.getId());
 
@@ -397,11 +418,13 @@ public enum UnitSimulator implements EventProcessor {
         final VehicleUnit vehicle;
         String vehicleName = vehicleRegistration.getMapping().getName();
         VehicleType vehicleType = vehicleRegistration.getMapping().getVehicleType();
+
         if (vehicleRegistration.getMapping().getVehicleType().getVehicleClass().equals(VehicleClass.ElectricVehicle)) {
             vehicle = new ElectricVehicleUnit(vehicleName, vehicleType, initialPosition);
         } else {
             vehicle = new VehicleUnit(vehicleName, vehicleType, initialPosition);
         }
+        vehicle.setGroup(vehicleRegistration.getMapping().getGroup());
 
         addSimulationUnit(vehicle);
         doSensorRegistration(time, vehicle.getId());
@@ -448,7 +471,7 @@ public enum UnitSimulator implements EventProcessor {
      */
     private void removeVehicles(RemoveVehicles removeVehicles) {
         for (String vehicleId : removeVehicles.getRemovedNames()) {
-            log.trace("remove vehicle: {}" + vehicleId);
+            log.trace("remove vehicle: {}", vehicleId);
             AbstractSimulationUnit unit = getUnitFromId(vehicleId);
             if (unit == null) {
                 continue;

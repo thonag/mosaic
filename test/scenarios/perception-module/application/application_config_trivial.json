@@ -1,5 +1,13 @@
 {
     "perceptionConfiguration": {
-        "perceptionBackend": "Trivial"
+        "vehicleIndex": {
+            "type": "VehicleMap"
+        },
+        "trafficLightIndex": {
+            "type": "TrafficLightMap"
+        },
+        "wallIndex": {
+            "type": "WallTree"
+        }
     }
 }

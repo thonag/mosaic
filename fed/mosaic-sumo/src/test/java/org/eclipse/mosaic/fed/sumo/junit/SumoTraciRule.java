@@ -38,11 +38,13 @@ import org.slf4j.LoggerFactory;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.net.ConnectException;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -53,6 +55,9 @@ public class SumoTraciRule implements TestRule {
     private static final Pattern PORT_PATTERN = Pattern.compile(".*Starting server on port ([0-9]+).*");
 
     private static final SumoVersion MINIMUM_VERSION_TESTED = SumoVersion.SUMO_1_0_x;
+
+    private static final int MAX_CONNECTION_TRIES = 10;
+    private static final int CONNECTION_RETRY_TIME_MS = 500;
 
     private final Logger log = LoggerFactory.getLogger(this.getClass());
 
@@ -80,8 +85,9 @@ public class SumoTraciRule implements TestRule {
         return new Statement() {
             @Override
             public void evaluate() throws Throwable {
-                before();
                 try {
+                    before();
+
                     SinceTraci sinceTraci = description.getAnnotation(SinceTraci.class);
                     if (sinceTraci != null) {
                         SumoVersion currentVersion = SumoTraciRule.this.traci.getCurrentVersion();
@@ -126,13 +132,13 @@ public class SumoTraciRule implements TestRule {
         // startup sumo
         final List<String> startArgs = Lists.newArrayList("-c", scenarioConfig.getName(),
                 "-v", "--remote-port", Integer.toString(port),
-                "--step-length", String.format(Locale.ENGLISH, "%.2f", (double) sumoConfig.updateInterval / 1000d));
+                "--step-length", String.format(Locale.ENGLISH, "%.2f", (double) sumoConfig.updateInterval / 1000d),
+                "--xml-validation", "always"
+        );
         startArgs.addAll(Arrays.asList(StringUtils.split(sumoConfig.additionalSumoParameters.trim(), " ")));
 
-        sumoProcess = new ExecutableFederateExecutor(
-                null,
-                getSumoExecutable(sumoCmd), startArgs).startLocalFederate(scenarioConfig.getParentFile()
-        );
+        sumoProcess = new ExecutableFederateExecutor(null, getSumoExecutable(sumoCmd), startArgs)
+                .startLocalFederate(scenarioConfig.getParentFile());
 
         if (!GUI_DEBUG) {
             // make sure to read until server is started, otherwise test will fail!
@@ -153,9 +159,23 @@ public class SumoTraciRule implements TestRule {
         redirectOutputToLog(); // this is necessary, otherwise TraCI will hang due to full output buffer
 
         log.info("Connect to SUMO on port {}", port);
-        final Socket socket = new Socket("localhost", port);
-        socket.setPerformancePreferences(0, 100, 10);
-        socket.setTcpNoDelay(true);
+
+        Socket socket = null;
+        int tries = 0;
+        while (tries++ < MAX_CONNECTION_TRIES && socket == null) {
+            try {
+                Thread.sleep(CONNECTION_RETRY_TIME_MS);
+                socket = new Socket("localhost", port);
+                socket.setPerformancePreferences(0, 100, 10);
+                socket.setTcpNoDelay(true);
+            } catch (ConnectException e) {
+                log.debug("Could not connect, try again in 500ms");
+            }
+        }
+
+        if (socket == null) {
+            throw new IllegalStateException("Could not establish connection to SUMO.");
+        }
 
         final CommandRegister commandRegister = new CommandRegister(sumoConfig, "traci");
         this.traci = new TraciClientBridge(sumoConfig, socket, commandRegister);
@@ -174,10 +194,13 @@ public class SumoTraciRule implements TestRule {
 
     private void redirectOutputToLog() {
         log.info("Start logging threads");
-        outputLoggingThread = new ProcessLoggingThread(log, sumoProcess.getInputStream(), "SumoAmbassador", ProcessLoggingThread.Level.Debug);
+        outputLoggingThread = new ProcessLoggingThread("sumo", sumoProcess.getInputStream(), log::debug);
         outputLoggingThread.start();
 
-        errorLoggingThread = new ProcessLoggingThread(log, sumoProcess.getErrorStream(), "SumoAmbassador", ProcessLoggingThread.Level.Error);
+        errorLoggingThread = new ProcessLoggingThread("sumo", sumoProcess.getErrorStream(), line -> {
+            log.error(line);
+            System.err.println(line); // make sure that we see what's wrong when SUMO cannot start
+        });
         errorLoggingThread.start();
     }
 
@@ -188,43 +211,44 @@ public class SumoTraciRule implements TestRule {
     private void after() {
         Bridge.VEHICLE_ID_TRANSFORMER.reset();
         try {
-            log.info("Close Traci Connection");
-            traci.close();
+            if (traci != null) {
+                log.info("Close Traci Connection");
+                traci.close();
+            }
         } catch (Exception e) {
             log.error("Could not close TraCI connection properly", e);
         }
 
         try {
-            log.info("Close SUMO process");
-            sumoProcess.waitFor();
-            sumoProcess.destroyForcibly().waitFor();
-            sumoProcess = null;
+            if (outputLoggingThread != null) {
+                log.info("Close Output Logging Thread");
+                outputLoggingThread.close();
+                outputLoggingThread = null;
+            }
         } catch (Exception e) {
-            log.error("Could not SUMO process", e);
+            log.error("Could not close Output Logging Thread", e);
         }
 
         try {
-            log.info("Close Output Logging Thread");
-            outputLoggingThread.close();
-            outputLoggingThread = null;
+            if (errorLoggingThread != null) {
+                log.info("Close Error Logging Thread");
+                errorLoggingThread.close();
+                errorLoggingThread = null;
+            }
         } catch (Exception e) {
-            log.error("Could not close Logging Thread", e);
+            log.error("Could not close Error Logging Thread", e);
         }
 
         try {
-            log.info("Close Error Logging Thread");
-            errorLoggingThread.close();
-            errorLoggingThread = null;
+            if (sumoProcess != null) {
+                log.info("Close SUMO process");
+                sumoProcess.waitFor(5, TimeUnit.SECONDS);
+                sumoProcess.destroyForcibly().waitFor();
+                sumoProcess = null;
+            }
         } catch (Exception e) {
-            log.error("Could not close Logging Thread", e);
+            log.error("Could not stop SUMO process", e);
         }
-
-        try {
-            Thread.sleep(500);
-        } catch (Exception e) {
-            //
-        }
-
     }
 
     public Bridge getTraciConnection() {

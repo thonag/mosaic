@@ -20,10 +20,10 @@ import org.eclipse.mosaic.fed.sumo.bridge.CommandException;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleGetParameter;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleGetRouteId;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleGetVehicleTypeId;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetChangeLane;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetColor;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetHighlight;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetImperfection;
-import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetLane;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetLaneChangeMode;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetMaxAcceleration;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetMaxDeceleration;
@@ -40,16 +40,31 @@ import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetSpeedFactor;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetSpeedMode;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetStop;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetVehicleLength;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetAccel;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetDecel;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetHeight;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetLength;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetMaxSpeed;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetMinGap;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetSigma;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetSpeedFactor;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetTau;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetVClass;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleTypeGetWidth;
 import org.eclipse.mosaic.fed.sumo.bridge.api.complex.SumoLaneChangeMode;
 import org.eclipse.mosaic.fed.sumo.bridge.api.complex.SumoSpeedMode;
+import org.eclipse.mosaic.fed.sumo.util.SumoVehicleClassMapping;
 import org.eclipse.mosaic.lib.enums.VehicleStopMode;
 import org.eclipse.mosaic.lib.geo.CartesianPoint;
+import org.eclipse.mosaic.lib.objects.vehicle.VehicleType;
 import org.eclipse.mosaic.rti.api.InternalFederateException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.awt.Color;
+import java.util.HashMap;
+import java.util.Map;
 
 public class VehicleFacade {
 
@@ -62,7 +77,7 @@ public class VehicleFacade {
     private final VehicleGetParameter getParameter;
 
 
-    private final VehicleSetLane changeLane;
+    private final VehicleSetChangeLane changeLane;
     private final VehicleSetSlowDown slowDown;
     private final VehicleSetStop stop;
     private final VehicleSetResume resume;
@@ -85,6 +100,20 @@ public class VehicleFacade {
     private final VehicleSetSpeedMode setSpeedMode;
     private final VehicleSetParameter setParameter;
 
+    private final VehicleTypeGetLength getVehicleTypeLength;
+    private final VehicleTypeGetWidth getVehicleTypeWidth;
+    private final VehicleTypeGetHeight getVehicleTypeHeight;
+    private final VehicleTypeGetMinGap getVehicleTypeMinGap;
+    private final VehicleTypeGetMaxSpeed getVehicleTypeMaxSpeed;
+    private final VehicleTypeGetVClass getVehicleTypeVClass;
+    private final VehicleTypeGetAccel getVehicleTypeAccel;
+    private final VehicleTypeGetDecel getVehicleTypeDecel;
+    private final VehicleTypeGetSigma getVehicleTypeSigma;
+    private final VehicleTypeGetTau getVehicleTypeTau;
+    private final VehicleTypeGetSpeedFactor getVehicleTypeSpeedFactor;
+
+    private final Map<String, VehicleType> cachedVehicleTypes = new HashMap<>();
+
 
     /**
      * Creates a new {@link VehicleFacade} object.
@@ -98,7 +127,7 @@ public class VehicleFacade {
         getVehicleTypeId = bridge.getCommandRegister().getOrCreate(VehicleGetVehicleTypeId.class);
         getParameter = bridge.getCommandRegister().getOrCreate(VehicleGetParameter.class);
 
-        changeLane = bridge.getCommandRegister().getOrCreate(VehicleSetLane.class);
+        changeLane = bridge.getCommandRegister().getOrCreate(VehicleSetChangeLane.class);
         slowDown = bridge.getCommandRegister().getOrCreate(VehicleSetSlowDown.class);
         stop = bridge.getCommandRegister().getOrCreate(VehicleSetStop.class);
         resume = bridge.getCommandRegister().getOrCreate(VehicleSetResume.class);
@@ -118,6 +147,18 @@ public class VehicleFacade {
         setLaneChangeMode = bridge.getCommandRegister().getOrCreate(VehicleSetLaneChangeMode.class);
         setSpeedMode = bridge.getCommandRegister().getOrCreate(VehicleSetSpeedMode.class);
         setParameter = bridge.getCommandRegister().getOrCreate(VehicleSetParameter.class);
+
+        getVehicleTypeLength = bridge.getCommandRegister().getOrCreate(VehicleTypeGetLength.class);
+        getVehicleTypeWidth = bridge.getCommandRegister().getOrCreate(VehicleTypeGetWidth.class);
+        getVehicleTypeHeight = bridge.getCommandRegister().getOrCreate(VehicleTypeGetHeight.class);
+        getVehicleTypeMinGap = bridge.getCommandRegister().getOrCreate(VehicleTypeGetMinGap.class);
+        getVehicleTypeMaxSpeed = bridge.getCommandRegister().getOrCreate(VehicleTypeGetMaxSpeed.class);
+        getVehicleTypeVClass = bridge.getCommandRegister().getOrCreate(VehicleTypeGetVClass.class);
+        getVehicleTypeAccel = bridge.getCommandRegister().getOrCreate(VehicleTypeGetAccel.class);
+        getVehicleTypeDecel = bridge.getCommandRegister().getOrCreate(VehicleTypeGetDecel.class);
+        getVehicleTypeSigma = bridge.getCommandRegister().getOrCreate(VehicleTypeGetSigma.class);
+        getVehicleTypeTau = bridge.getCommandRegister().getOrCreate(VehicleTypeGetTau.class);
+        getVehicleTypeSpeedFactor = bridge.getCommandRegister().getOrCreate(VehicleTypeGetSpeedFactor.class);
 
         highlight = bridge.getCommandRegister().getOrCreate(VehicleSetHighlight.class);
     }
@@ -153,16 +194,53 @@ public class VehicleFacade {
     }
 
     /**
-     * This method enables a vehicle to change the lane.
+     * Getter for the complete Vehicle type.
      *
-     * @param vehicle    The Id of the vehicle.
-     * @param lane       The number of the lane.
-     * @param durationMs The duration in [ms].
+     * @param vehicleTypeId The id of the vehicle type.
+     * @return The complete vehicle type.
      * @throws InternalFederateException if some serious error occurs during writing or reading. The TraCI connection is shut down.
      */
-    public void changeLane(String vehicle, int lane, int durationMs) throws InternalFederateException {
+    public VehicleType getVehicleType(String vehicleTypeId) throws InternalFederateException {
         try {
-            changeLane.execute(bridge, vehicle, lane, durationMs);
+            VehicleType vehicleType = cachedVehicleTypes.get(vehicleTypeId);
+            if (vehicleType == null) {
+                vehicleType = new VehicleType(
+                        vehicleTypeId,
+                        getVehicleTypeLength.execute(bridge, vehicleTypeId),
+                        getVehicleTypeWidth.execute(bridge, vehicleTypeId),
+                        getVehicleTypeHeight.execute(bridge, vehicleTypeId),
+                        getVehicleTypeMinGap.execute(bridge, vehicleTypeId),
+                        getVehicleTypeMaxSpeed.execute(bridge, vehicleTypeId),
+                        SumoVehicleClassMapping.fromSumo(getVehicleTypeVClass.execute(bridge, vehicleTypeId)),
+                        getVehicleTypeAccel.execute(bridge, vehicleTypeId),
+                        getVehicleTypeDecel.execute(bridge, vehicleTypeId),
+                        null, // not available via TraCI, will use the decel value instead
+                        getVehicleTypeSigma.execute(bridge, vehicleTypeId),
+                        getVehicleTypeTau.execute(bridge, vehicleTypeId),
+                        getVehicleTypeSpeedFactor.execute(bridge, vehicleTypeId),
+                        null, // would require to translate from rgb to a string name
+                        null, // not available via TraCI
+                        null // not available via TraCI
+                );
+                cachedVehicleTypes.put(vehicleTypeId, vehicleType);
+            }
+            return vehicleType;
+        } catch (IllegalArgumentException | CommandException e) {
+            throw new InternalFederateException("Could not request vehicle type for type id " + vehicleTypeId, e);
+        }
+    }
+
+    /**
+     * This method enables a vehicle to change the lane.
+     *
+     * @param vehicle  The Id of the vehicle.
+     * @param lane     The number of the lane.
+     * @param duration The duration in [ns].
+     * @throws InternalFederateException if some serious error occurs during writing or reading. The TraCI connection is shut down.
+     */
+    public void changeLane(String vehicle, int lane, long duration) throws InternalFederateException {
+        try {
+            changeLane.execute(bridge, vehicle, lane, duration);
         } catch (IllegalArgumentException | CommandException e) {
             log.warn("Could not change lane for vehicle {}", vehicle);
         }
@@ -173,12 +251,12 @@ public class VehicleFacade {
      *
      * @param vehicle     The if of the vehicle.
      * @param newSpeedMps The new speed in [m/s].
-     * @param durationMs  The duration of slow down in [m/s].
+     * @param duration    The duration of slow down in [ns].
      * @throws InternalFederateException if some serious error occurs during writing or reading. The TraCI connection is shut down.
      */
-    public void slowDown(String vehicle, double newSpeedMps, int durationMs) throws InternalFederateException {
+    public void slowDown(String vehicle, double newSpeedMps, long duration) throws InternalFederateException {
         try {
-            slowDown.execute(bridge, vehicle, newSpeedMps, durationMs);
+            slowDown.execute(bridge, vehicle, newSpeedMps, duration);
         } catch (IllegalArgumentException | CommandException e) {
             log.warn("Could not slow down vehicle {}", vehicle);
         }
@@ -191,14 +269,13 @@ public class VehicleFacade {
      * @param edgeId    The id of the edge.
      * @param position  The position of the stop.
      * @param laneIndex The index of the lane on which to stop.
-     * @param duration  The duration for stop in [ms].
+     * @param duration  The duration for stop in [ns].
      * @param stopMode  The mode indicating the type of the stop.
      * @throws InternalFederateException if some serious error occurs during writing or reading. The TraCI connection is shut down.
      */
-    public void stop(String vehicle, String edgeId, double position, int laneIndex, int duration, VehicleStopMode stopMode) throws InternalFederateException {
+    public void stop(String vehicle, String edgeId, double position, int laneIndex, long duration, VehicleStopMode stopMode) throws InternalFederateException {
         try {
-
-            stop.execute(bridge, vehicle, edgeId, position, laneIndex, duration, vehicleStopModeToInt(stopMode));
+            stop.execute(bridge, vehicle, edgeId, position, laneIndex, duration, VehicleStopMode.toSumoInt(stopMode));
         } catch (IllegalArgumentException | CommandException e) {
             throw new InternalFederateException("Could not stop vehicle " + vehicle, e);
         }
@@ -511,23 +588,5 @@ public class VehicleFacade {
         }
     }
 
-    /**
-     * Returns the corresponding integer for different stop modes according to
-     * <a href="https://sumo.dlr.de/docs/TraCI/Change_Vehicle_State.html#stop_0x12">stop</a>.
-     *
-     * @return the corresponding int to the stop mode
-     */
-    private int vehicleStopModeToInt(VehicleStopMode vehicleStopMode) {
-        switch (vehicleStopMode) {
-            case STOP:
-                return 0;
-            case PARK_ON_ROADSIDE:
-                return 1;
-            case PARK_IN_PARKING_AREA: // these flags are additive (see sumo docs)
-                return 64 + vehicleStopModeToInt(VehicleStopMode.PARK_ON_ROADSIDE);
-            case NOT_STOPPED:
-            default:
-                return -1;
-        }
-    }
+
 }

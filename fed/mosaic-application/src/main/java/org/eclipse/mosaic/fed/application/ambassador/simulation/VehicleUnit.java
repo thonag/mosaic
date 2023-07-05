@@ -21,14 +21,12 @@ import org.eclipse.mosaic.fed.application.ambassador.navigation.INavigationModul
 import org.eclipse.mosaic.fed.application.ambassador.navigation.NavigationModule;
 import org.eclipse.mosaic.fed.application.ambassador.navigation.RoadPositionFactory;
 import org.eclipse.mosaic.fed.application.ambassador.simulation.communication.CamBuilder;
+import org.eclipse.mosaic.fed.application.ambassador.simulation.perception.NopPerceptionModule;
 import org.eclipse.mosaic.fed.application.ambassador.simulation.perception.SimplePerceptionConfiguration;
-import org.eclipse.mosaic.fed.application.ambassador.simulation.perception.SimplePerceptionModule;
-import org.eclipse.mosaic.fed.application.ambassador.simulation.perception.SumoPerceptionModule;
 import org.eclipse.mosaic.fed.application.app.api.CommunicationApplication;
 import org.eclipse.mosaic.fed.application.app.api.VehicleApplication;
 import org.eclipse.mosaic.fed.application.app.api.os.VehicleOperatingSystem;
 import org.eclipse.mosaic.fed.application.app.api.perception.PerceptionModule;
-import org.eclipse.mosaic.fed.application.config.CApplicationAmbassador;
 import org.eclipse.mosaic.interactions.vehicle.VehicleLaneChange;
 import org.eclipse.mosaic.interactions.vehicle.VehicleParametersChange;
 import org.eclipse.mosaic.interactions.vehicle.VehicleResume;
@@ -38,6 +36,7 @@ import org.eclipse.mosaic.interactions.vehicle.VehicleSlowDown;
 import org.eclipse.mosaic.interactions.vehicle.VehicleSpeedChange;
 import org.eclipse.mosaic.interactions.vehicle.VehicleSpeedChange.VehicleSpeedChangeType;
 import org.eclipse.mosaic.interactions.vehicle.VehicleStop;
+import org.eclipse.mosaic.lib.database.Database;
 import org.eclipse.mosaic.lib.enums.VehicleStopMode;
 import org.eclipse.mosaic.lib.geo.GeoPoint;
 import org.eclipse.mosaic.lib.objects.road.IRoadPosition;
@@ -46,6 +45,7 @@ import org.eclipse.mosaic.lib.objects.vehicle.BatteryData;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleData;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleRoute;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleType;
+import org.eclipse.mosaic.lib.routing.database.DatabaseRouting;
 import org.eclipse.mosaic.lib.util.scheduling.Event;
 
 import java.util.Objects;
@@ -79,11 +79,17 @@ public class VehicleUnit extends AbstractSimulationUnit implements VehicleOperat
         navigationModule = new NavigationModule(this);
         navigationModule.setCurrentPosition(initialPosition);
 
-        if (SimulationKernel.SimulationKernel.getConfiguration().perceptionConfiguration.perceptionBackend
-                == CApplicationAmbassador.CPerception.PerceptionBackend.SUMO) {
-            perceptionModule = new SumoPerceptionModule(this);
+        Database database = null;
+        if (SimulationKernel.SimulationKernel.getCentralNavigationComponent().getRouting() instanceof DatabaseRouting) {
+            database = ((DatabaseRouting) SimulationKernel.SimulationKernel
+                    .getCentralNavigationComponent().getRouting()).getScenarioDatabase();
+        }
+
+        if (SimulationKernel.SimulationKernel.getConfiguration().perceptionConfiguration.vehicleIndex != null) {
+            perceptionModule = SimulationKernel.SimulationKernel.getConfiguration().perceptionConfiguration.vehicleIndex
+                    .createPerceptionModule(this, database, getOsLog());
         } else {
-            perceptionModule = new SimplePerceptionModule(this, getOsLog());
+            perceptionModule = new NopPerceptionModule(this, database, getOsLog());
         }
     }
 
@@ -109,7 +115,10 @@ public class VehicleUnit extends AbstractSimulationUnit implements VehicleOperat
         refineRoadPosition();
 
         for (VehicleApplication application : getApplicationsIterator(VehicleApplication.class)) {
-            application.onVehicleUpdated(previousVehicleData, currentVehicleData);
+            application.onVehicleUpdated(
+                    previousVehicleData,
+                    Objects.requireNonNull(navigationModule.getVehicleData(), "Invalid state, vehicle data should not be null")
+            );
         }
     }
 
@@ -149,14 +158,14 @@ public class VehicleUnit extends AbstractSimulationUnit implements VehicleOperat
     }
 
     @Override
-    public void changeLane(int targetLaneIndex, int duration) {
+    public void changeLane(int targetLaneIndex, long duration) {
         VehicleLaneChange vehicleLaneChange =
                 new VehicleLaneChange(SimulationKernel.SimulationKernel.getCurrentSimulationTime(), getId(), targetLaneIndex, duration);
         sendInteractionToRti(vehicleLaneChange);
     }
 
     @Override
-    public void changeLane(VehicleLaneChange.VehicleLaneChangeMode vehicleLaneChangeMode, int duration) {
+    public void changeLane(VehicleLaneChange.VehicleLaneChangeMode vehicleLaneChangeMode, long duration) {
         VehicleLaneChange vehicleLaneChange = new VehicleLaneChange(
                 SimulationKernel.SimulationKernel.getCurrentSimulationTime(),
                 getId(),
@@ -169,22 +178,22 @@ public class VehicleUnit extends AbstractSimulationUnit implements VehicleOperat
 
 
     @Override
-    public void slowDown(float speed, int interval) {
+    public void slowDown(float speed, long duration) {
         VehicleSlowDown vehicleSlowDown = new VehicleSlowDown(
                 SimulationKernel.SimulationKernel.getCurrentSimulationTime(),
                 getId(),
                 speed,
-                interval
+                duration
         );
         sendInteractionToRti(vehicleSlowDown);
     }
 
     @Override
-    public void changeSpeedWithInterval(double newSpeed, int interval) {
+    public void changeSpeedWithInterval(double newSpeed, long interval) {
         VehicleSpeedChange vehicleSpeedChange = new VehicleSpeedChange(
                 SimulationKernel.SimulationKernel.getCurrentSimulationTime(),
                 getId(),
-                VehicleSpeedChangeType.WITH_INTERVAL,
+                VehicleSpeedChangeType.WITH_DURATION,
                 newSpeed,
                 interval, 0
         );
@@ -228,19 +237,19 @@ public class VehicleUnit extends AbstractSimulationUnit implements VehicleOperat
     }
 
     @Override
-    public void stop(IRoadPosition stopPosition, VehicleStopMode vehicleStopMode, int durationInMs) {
+    public void stop(IRoadPosition stopPosition, VehicleStopMode vehicleStopMode, long durationInNs) {
         VehicleStop vehicleStop = new VehicleStop(
                 SimulationKernel.SimulationKernel.getCurrentSimulationTime(),
                 getId(),
                 stopPosition,
-                durationInMs,
+                durationInNs,
                 vehicleStopMode
         );
         sendInteractionToRti(vehicleStop);
     }
 
     @Override
-    public void stopNow(VehicleStopMode vehicleStopMode, int durationInNs) {
+    public void stopNow(VehicleStopMode vehicleStopMode, long durationInNs) {
         if (getVehicleData() == null) {
             getOsLog().error("Could not stop vehicle as it has no data present to estimate stop position.");
             return;
@@ -301,8 +310,6 @@ public class VehicleUnit extends AbstractSimulationUnit implements VehicleOperat
         }
         return camBuilder;
     }
-
-
 
     @Override
     public VehicleType getInitialVehicleType() {

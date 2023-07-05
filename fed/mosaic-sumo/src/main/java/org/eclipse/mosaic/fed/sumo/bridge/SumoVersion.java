@@ -38,6 +38,11 @@ public enum SumoVersion {
     SUMO_1_11_x("1.11.*", TraciVersion.API_20),
     SUMO_1_12_x("1.12.*", TraciVersion.API_20),
     SUMO_1_13_x("1.13.*", TraciVersion.API_20),
+    SUMO_1_14_x("1.14.*", TraciVersion.API_20),
+    SUMO_1_15_x("1.15.*", TraciVersion.API_20),
+    SUMO_1_16_x("1.16.*", TraciVersion.API_20),
+
+    SUMO_1_17_x("1.17.*", TraciVersion.API_20),
 
     /**
      * the lowest version supported by this client.
@@ -47,7 +52,7 @@ public enum SumoVersion {
     /**
      * the highest version supported by this client.
      */
-    HIGHEST(SUMO_1_13_x.sumoVersion, SUMO_1_13_x.traciVersion);
+    HIGHEST(SUMO_1_17_x.sumoVersion, SUMO_1_17_x.traciVersion);
 
     private final String sumoVersion;
     private final TraciVersion traciVersion;
@@ -69,10 +74,6 @@ public enum SumoVersion {
         return sumoVersion;
     }
 
-    public TraciVersion getTraciVersion() {
-        return traciVersion;
-    }
-
     public static SumoVersion getSumoVersion(String sumoVersion) {
         for (SumoVersion version : SumoVersion.values()) {
             if (matches(sumoVersion, version.getSumoVersion())) {
@@ -80,6 +81,10 @@ public enum SumoVersion {
             }
         }
         return UNKNOWN;
+    }
+
+    public TraciVersion getTraciVersion() {
+        return traciVersion;
     }
 
     private final static Pattern VERSION_PATTERN = Pattern.compile("^SUMO v?([0-9]\\.[0-9]+)\\..*$");

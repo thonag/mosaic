@@ -45,6 +45,7 @@ import org.eclipse.mosaic.fed.sumo.util.TrafficSignManager;
 import org.eclipse.mosaic.interactions.application.SumoTraciRequest;
 import org.eclipse.mosaic.interactions.application.SumoTraciResponse;
 import org.eclipse.mosaic.interactions.mapping.advanced.ScenarioTrafficLightRegistration;
+import org.eclipse.mosaic.interactions.mapping.advanced.ScenarioVehicleRegistration;
 import org.eclipse.mosaic.interactions.traffic.InductionLoopDetectorSubscription;
 import org.eclipse.mosaic.interactions.traffic.LaneAreaDetectorSubscription;
 import org.eclipse.mosaic.interactions.traffic.LanePropertyChange;
@@ -80,6 +81,7 @@ import org.eclipse.mosaic.lib.objects.trafficsign.TrafficSignSpeed;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleData;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleParameter;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleRoute;
+import org.eclipse.mosaic.lib.objects.vehicle.VehicleType;
 import org.eclipse.mosaic.lib.util.FileUtils;
 import org.eclipse.mosaic.lib.util.ProcessLoggingThread;
 import org.eclipse.mosaic.lib.util.objects.ObjectInstantiation;
@@ -96,6 +98,7 @@ import org.eclipse.mosaic.rti.api.InternalFederateException;
 import org.eclipse.mosaic.rti.api.federatestarter.ExecutableFederateExecutor;
 import org.eclipse.mosaic.rti.api.federatestarter.NopFederateExecutor;
 import org.eclipse.mosaic.rti.api.parameters.AmbassadorParameter;
+import org.eclipse.mosaic.rti.api.parameters.FederatePriority;
 import org.eclipse.mosaic.rti.config.CLocalHost;
 
 import com.google.common.collect.Iterables;
@@ -116,10 +119,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
 import javax.annotation.concurrent.NotThreadSafe;
@@ -165,13 +170,22 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
     /**
      * List of vehicles that are simulated externally.
      */
-    private final HashMap<String, ExternalVehicleState> externalVehicleMap = new HashMap<>();
+    protected final Map<String, ExternalVehicleState> externalVehicles = new HashMap<>();
+
+    /**
+     * Set containing all vehicles, that have been added from the RTI e.g. using the Mapping file.
+     */
+    final Set<String> vehiclesAddedViaRti = new HashSet<>();
+
+    /**
+     * Set containing all vehicles, that have been added using the SUMO route file.
+     */
+    final Set<String> vehiclesAddedViaRouteFile = new HashSet<>();
 
     /**
      * Manages traffic signs to be added as POIs to SUMO (e.g. for visualization)
      */
     private final TrafficSignManager trafficSignManager;
-
 
     /**
      * Sleep after each connection try. Unit: [ms].
@@ -204,7 +218,7 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
     /**
      * This contains references to all {@link VehicleRoute}s that are known to SUMO.
      */
-    final HashMap<String, VehicleRoute> routeCache = new HashMap<>();
+    final HashMap<String, VehicleRoute> routes = new HashMap<>();
 
     /**
      * Creates a new {@link AbstractSumoAmbassador} object.
@@ -254,11 +268,11 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
     @Override
     public FederateExecutor createFederateExecutor(String host, int port, CLocalHost.OperatingSystem os) {
         // SUMO needs to start the federate by itself, therefore we need to store the federate starter locally and use it later
-        federateExecutor = new ExecutableFederateExecutor(descriptor, getSumoExecutable("sumo"), getProgramArguments(port));
+        federateExecutor = new ExecutableFederateExecutor(descriptor, getFromSumoHome("sumo"), getProgramArguments(port));
         return new NopFederateExecutor();
     }
 
-    static String getSumoExecutable(String executable) {
+    static String getFromSumoHome(String executable) {
         String sumoHome = System.getenv("SUMO_HOME");
         if (StringUtils.isNotBlank(sumoHome)) {
             return sumoHome + File.separator + "bin" + File.separator + executable;
@@ -396,7 +410,7 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
         }
 
         try {
-            rti.requestAdvanceTime(nextTimeStep, 0, (byte) 1);
+            rti.requestAdvanceTime(nextTimeStep, 0, FederatePriority.higher(descriptor.getPriority()));
         } catch (IllegalValueException e) {
             log.error("Error during advanceTime request", e);
             throw new InternalFederateException(e);
@@ -426,7 +440,8 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
                                 SumoVersion.LOWEST.getSumoVersion())
                 );
             }
-            log.info("Current API version of SUMO is {} (=SUMO {})", bridge.getCurrentVersion().getApiVersion(), bridge.getCurrentVersion().getSumoVersion());
+            log.info("Current API version of SUMO is {} (=SUMO {})", bridge.getCurrentVersion().getApiVersion(),
+                    bridge.getCurrentVersion().getSumoVersion());
         } catch (IOException e) {
             log.error("Error while trying to initialize SUMO ambassador.", e);
             throw new InternalFederateException("Could not initialize SUMO ambassador. Please see Traffic.log for details.", e);
@@ -521,8 +536,8 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
      */
     private synchronized void receiveInteraction(VehicleFederateAssignment vehicleFederateAssignment) {
         if (!vehicleFederateAssignment.getAssignedFederate().equals(getId())
-                && !externalVehicleMap.containsKey(vehicleFederateAssignment.getVehicleId())) {
-            externalVehicleMap.put(vehicleFederateAssignment.getVehicleId(), new ExternalVehicleState());
+                && !externalVehicles.containsKey(vehicleFederateAssignment.getVehicleId())) {
+            externalVehicles.put(vehicleFederateAssignment.getVehicleId(), new ExternalVehicleState());
         }
     }
 
@@ -537,16 +552,15 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
             return;
         }
 
-        ExternalVehicleState vehicleState;
         for (VehicleData updatedVehicle : vehicleUpdates.getUpdated()) {
-            vehicleState = externalVehicleMap.get(updatedVehicle.getName());
-            if (vehicleState != null) {
-                vehicleState.setLastMovementInfo(updatedVehicle);
+            ExternalVehicleState externalVehicleState = externalVehicles.get(updatedVehicle.getName());
+            if (externalVehicleState != null) {
+                externalVehicleState.setLastMovementInfo(updatedVehicle);
             }
         }
 
         for (String removed : vehicleUpdates.getRemovedNames()) {
-            if (externalVehicleMap.containsKey(removed)) {
+            if (externalVehicles.containsKey(removed)) {
                 bridge.getSimulationControl().removeVehicle(removed, VehicleSetRemove.Reason.ARRIVED);
             }
         }
@@ -558,7 +572,7 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
      * @param vehicleSlowDown interaction indicating that a vehicle has to slow down
      */
     private synchronized void receiveInteraction(VehicleSlowDown vehicleSlowDown) throws InternalFederateException {
-        if (externalVehicleMap.containsKey(vehicleSlowDown.getVehicleId())) {
+        if (externalVehicles.containsKey(vehicleSlowDown.getVehicleId())) {
             return;
         }
         if (log.isInfoEnabled()) {
@@ -568,11 +582,11 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
                     TIME.format(vehicleSlowDown.getTime()),
                     vehicleSlowDown.getVehicleId(),
                     vehicleSlowDown.getSpeed(),
-                    vehicleSlowDown.getInterval()
+                    vehicleSlowDown.getDuration()
             );
         }
         bridge.getVehicleControl()
-                .slowDown(vehicleSlowDown.getVehicleId(), vehicleSlowDown.getSpeed(), convertTime((int) vehicleSlowDown.getInterval()));
+                .slowDown(vehicleSlowDown.getVehicleId(), vehicleSlowDown.getSpeed(), vehicleSlowDown.getDuration());
     }
 
     /**
@@ -581,14 +595,15 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
      * @param vehicleStop interaction indicating that a vehicle has to stop.
      */
     private synchronized void receiveInteraction(VehicleStop vehicleStop) {
-        if (externalVehicleMap.containsKey(vehicleStop.getVehicleId())) {
+        if (externalVehicles.containsKey(vehicleStop.getVehicleId())) {
             return;
         }
         try {
             final IRoadPosition stopPos = vehicleStop.getStopPosition();
             if (log.isInfoEnabled()) {
                 log.info(
-                        "{} at simulation time {}: vehicleId=\"{}\", edgeId=\"{}\", position=\"{}\", laneIndex={}, duration={}, stopMode={}",
+                        "{} at simulation time {}: vehicleId=\"{}\", edgeId=\"{}\", position=\"{}\", laneIndex={}, duration={}, "
+                                + "stopMode={}",
                         VEHICLE_STOP_REQ,
                         TIME.format(vehicleStop.getTime()),
                         vehicleStop.getVehicleId(),
@@ -615,7 +630,7 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
      * @param vehicleResume interaction indicating that a stopped vehicle has to resume
      */
     private synchronized void receiveInteraction(VehicleResume vehicleResume) throws InternalFederateException {
-        if (externalVehicleMap.containsKey(vehicleResume.getVehicleId())) {
+        if (externalVehicles.containsKey(vehicleResume.getVehicleId())) {
             return;
         }
         if (log.isInfoEnabled()) {
@@ -684,7 +699,7 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
      * @throws InternalFederateException Exception is thrown if an error occurred while converting to number.
      */
     private synchronized void receiveInteraction(VehicleLaneChange vehicleLaneChange) throws InternalFederateException {
-        if (externalVehicleMap.containsKey(vehicleLaneChange.getVehicleId())) {
+        if (externalVehicles.containsKey(vehicleLaneChange.getVehicleId())) {
             return;
         }
         try {
@@ -724,7 +739,7 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
                     log.warn("VehicleLaneChange failed: unsupported lane change mode.");
                     return;
             }
-            bridge.getVehicleControl().changeLane(vehicleLaneChange.getVehicleId(), targetLaneId, convertTime(vehicleLaneChange.getDuration()));
+            bridge.getVehicleControl().changeLane(vehicleLaneChange.getVehicleId(), targetLaneId, vehicleLaneChange.getDuration());
 
             if (sumoConfig.highlights.contains(CSumo.HIGHLIGHT_CHANGE_LANE)) {
                 VehicleData vehicleData = bridge.getSimulationControl().getLastKnownVehicleData(vehicleLaneChange.getVehicleId());
@@ -796,7 +811,8 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
                     bridge.getTrafficLightControl().setPhase(trafficLightGroupId, trafficLightStateChange.getCustomStateList());
                     break;
                 default:
-                    log.warn("Discard this TrafficLightStateChange interaction (paramType={}).", trafficLightStateChange.getParameterType());
+                    log.warn("Discard this TrafficLightStateChange interaction (paramType={}).",
+                            trafficLightStateChange.getParameterType());
                     return;
             }
 
@@ -833,14 +849,14 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
      * @param vehicleSpeedChange interaction indicating that a vehicle has to change its speed.
      */
     private synchronized void receiveInteraction(VehicleSpeedChange vehicleSpeedChange) throws InternalFederateException {
-        if (externalVehicleMap.containsKey(vehicleSpeedChange.getVehicleId())) {
+        if (externalVehicles.containsKey(vehicleSpeedChange.getVehicleId())) {
             return;
         }
         if (log.isInfoEnabled()) {
             log.info(
                     "{} at simulation time {}: " + "vehicleId=\"{}\", targetSpeed={}m/s, interval={}ms",
                     VEHICLE_SPEED_CHANGE_REQ, TIME.format(vehicleSpeedChange.getTime()), vehicleSpeedChange.getVehicleId(),
-                    vehicleSpeedChange.getSpeed(), vehicleSpeedChange.getInterval()
+                    vehicleSpeedChange.getSpeed(), vehicleSpeedChange.getDuration()
             );
         }
         switch (vehicleSpeedChange.getType()) {
@@ -848,17 +864,18 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
                 // reset speed to car-following rules
                 bridge.getVehicleControl().setSpeed(vehicleSpeedChange.getVehicleId(), -1.0);
                 break;
-            case WITH_INTERVAL:
-                if (vehicleSpeedChange.getInterval() > 0) {
+            case WITH_DURATION:
+                if (vehicleSpeedChange.getDuration() > 0) {
                     // set speed smoothly with given interval
-                    final long changeSpeedTimestep = vehicleSpeedChange.getTime() + (vehicleSpeedChange.getInterval() * TIME.MILLI_SECOND);
-                    log.debug("slow down vehicle {} and schedule change speed event for timestep {} ns ", vehicleSpeedChange.getVehicleId(), changeSpeedTimestep);
+                    final long changeSpeedTimestep = vehicleSpeedChange.getTime() + vehicleSpeedChange.getDuration();
+                    log.debug("slow down vehicle {} and schedule change speed event for timestep {} ns ",
+                            vehicleSpeedChange.getVehicleId(), changeSpeedTimestep);
                     bridge.getVehicleControl()
-                            .slowDown(vehicleSpeedChange.getVehicleId(), vehicleSpeedChange.getSpeed(), vehicleSpeedChange.getInterval());
+                            .slowDown(vehicleSpeedChange.getVehicleId(), vehicleSpeedChange.getSpeed(), vehicleSpeedChange.getDuration());
 
                     // set speed permanently after given interval (in the future) via the event scheduler
-                    long adjustedTime = adjustToSumoTimeStep(changeSpeedTimestep, sumoConfig.updateInterval * TIME.MILLI_SECOND);
-                    eventScheduler.addEvent(new Event(convertTime((int) adjustedTime), this, vehicleSpeedChange)
+                    long adjustedTime = adjustToSumoTimeStep(changeSpeedTimestep, sumoConfig.updateInterval);
+                    eventScheduler.addEvent(new Event(adjustedTime, this, vehicleSpeedChange)
                     );
                 } else {
                     // set speed immediately
@@ -1031,7 +1048,7 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
      * @throws InternalFederateException Exception is thrown if an error occurred while changing of the vehicle parameters.
      */
     private void receiveInteraction(VehicleParametersChange vehicleParametersChange) throws InternalFederateException {
-        if (externalVehicleMap.containsKey(vehicleParametersChange.getVehicleId())) {
+        if (externalVehicles.containsKey(vehicleParametersChange.getVehicleId())) {
             return;
         }
 
@@ -1106,11 +1123,11 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
      * than the edge's length, the stop command will fail. In such cases, the offset will decrease,
      * and the stop is requested again.
      */
-    private void stopVehicleAt(final String vehicleId, final IRoadPosition stopPos, final VehicleStopMode stopMode, final int duration)
+    private void stopVehicleAt(final String vehicleId, final IRoadPosition stopPos, final VehicleStopMode stopMode, final long duration)
             throws InternalFederateException {
         double stopPosition = 0;
         if (stopMode != VehicleStopMode.PARK_IN_PARKING_AREA) {
-            double lengthOfLane = bridge.getSimulationControl().getLengthOfLane(stopPos.getConnectionId(), stopPos.getLaneIndex());
+            double lengthOfLane = bridge.getSimulationControl().getLengthOfLane(stopPos.getConnectionId() + "_" + stopPos.getLaneIndex());
             stopPosition = stopPos.getOffset() < 0 ? lengthOfLane + stopPos.getOffset() : stopPos.getOffset();
             stopPosition = Math.min(Math.max(0.1, stopPosition), lengthOfLane);
         }
@@ -1164,8 +1181,8 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
 
             connectToFederate("localhost", p.getInputStream(), p.getErrorStream());
             // read error output of process in an extra thread
-            new ProcessLoggingThread(log, p.getInputStream(), "sumo", ProcessLoggingThread.Level.Info).start();
-            new ProcessLoggingThread(log, p.getErrorStream(), "sumo", ProcessLoggingThread.Level.Error).start();
+            new ProcessLoggingThread("sumo", p.getInputStream(), log::info).start();
+            new ProcessLoggingThread("sumo", p.getErrorStream(), log::error).start();
 
         } catch (FederateExecutor.FederateStarterException e) {
             log.error("Error while executing command: {}", federateExecutor.toString());
@@ -1213,18 +1230,20 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
             setExternalVehiclesToLatestPositions();
             TraciSimulationStepResult simulationStepResult = bridge.getSimulationControl().simulateUntil(time);
 
+            VehicleUpdates vehicleUpdates = simulationStepResult.getVehicleUpdates();
             log.trace("Leaving advance time: {}", time);
-            removeExternalVehiclesFromUpdates(simulationStepResult.getVehicleUpdates());
-            propagateNewRoutes(simulationStepResult.getVehicleUpdates(), time);
+            removeExternalVehiclesFromUpdates(vehicleUpdates);
+            propagateNewRoutes(vehicleUpdates, time);
+            propagateSumoVehiclesToRti(time);
 
             nextTimeStep += sumoConfig.updateInterval * TIME.MILLI_SECOND;
             simulationStepResult.getVehicleUpdates().setNextUpdate(nextTimeStep);
 
-            rti.triggerInteraction(simulationStepResult.getVehicleUpdates());
+            rti.triggerInteraction(vehicleUpdates);
             rti.triggerInteraction(simulationStepResult.getTrafficDetectorUpdates());
             this.rti.triggerInteraction(simulationStepResult.getTrafficLightUpdates());
 
-            rti.requestAdvanceTime(nextTimeStep, 0, (byte) 2);
+            rti.requestAdvanceTime(nextTimeStep, 0, FederatePriority.higher(descriptor.getPriority()));
 
             lastAdvanceTime = time;
         } catch (InternalFederateException | IOException | IllegalValueException e) {
@@ -1233,25 +1252,10 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
         }
     }
 
-    private void removeExternalVehiclesFromUpdates(VehicleUpdates updates) {
-        Iterator<VehicleData> updatesAddedIterator = updates.getAdded().iterator();
-        while (updatesAddedIterator.hasNext()) {
-            VehicleData currentVehicle = updatesAddedIterator.next();
-            if (externalVehicleMap.containsKey(currentVehicle.getName())) {
-                externalVehicleMap.get(currentVehicle.getName()).setAdded(true);
-                updatesAddedIterator.remove();
-            }
-        }
-
-        updates.getUpdated().removeIf(currentVehicle -> externalVehicleMap.containsKey(currentVehicle.getName()));
-        updates.getRemovedNames().removeIf(vehicle -> externalVehicleMap.remove(vehicle) != null);
-    }
-
     private void setExternalVehiclesToLatestPositions() {
-        VehicleData latestVehicleData;
-        for (Map.Entry<String, ExternalVehicleState> external : externalVehicleMap.entrySet()) {
+        for (Map.Entry<String, ExternalVehicleState> external : externalVehicles.entrySet()) {
             if (external.getValue().isAdded()) {
-                latestVehicleData = external.getValue().getLastMovementInfo();
+                VehicleData latestVehicleData = external.getValue().getLastMovementInfo();
                 if (latestVehicleData == null) {
                     log.warn("No position data available for external vehicle {}", external.getKey());
                     latestVehicleData = bridge.getSimulationControl().getLastKnownVehicleData(external.getKey());
@@ -1272,13 +1276,19 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
         }
     }
 
-    /**
-     * Vehicles of the notYetRegisteredVehicles list will be added by this function
-     * or cached again for the next time.
-     *
-     * @param time Current system time
-     */
-    abstract void flushNotYetAddedVehicles(long time) throws InternalFederateException;
+    private void removeExternalVehiclesFromUpdates(VehicleUpdates updates) {
+        Iterator<VehicleData> updatesAddedIterator = updates.getAdded().iterator();
+        while (updatesAddedIterator.hasNext()) {
+            VehicleData currentVehicle = updatesAddedIterator.next();
+            if (externalVehicles.containsKey(currentVehicle.getName())) {
+                externalVehicles.get(currentVehicle.getName()).setAdded(true);
+                updatesAddedIterator.remove();
+            }
+        }
+
+        updates.getUpdated().removeIf(currentVehicle -> externalVehicles.containsKey(currentVehicle.getName()));
+        updates.getRemovedNames().removeIf(vehicle -> externalVehicles.remove(vehicle) != null);
+    }
 
     /**
      * This handles the case that sumo handles routing and creates new routes while doing so.
@@ -1293,14 +1303,14 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
 
         // check added vehicles for new routes
         for (VehicleData vehicleData : vehicleUpdates.getAdded()) {
-            if (!routeCache.containsKey(vehicleData.getRouteId())) {
+            if (!routes.containsKey(vehicleData.getRouteId())) {
                 newRoutes.add(readRouteFromTraci(vehicleData.getRouteId()));
             }
         }
 
         // check updated vehicles for new routes
         for (VehicleData vehicleData : vehicleUpdates.getUpdated()) {
-            if (!routeCache.containsKey(vehicleData.getRouteId())) {
+            if (!routes.containsKey(vehicleData.getRouteId())) {
                 newRoutes.add(readRouteFromTraci(vehicleData.getRouteId()));
             }
         }
@@ -1316,9 +1326,42 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
             }
 
             // save in cache
-            routeCache.put(route.getId(), route);
+            routes.put(route.getId(), route);
         }
     }
+
+    private void propagateSumoVehiclesToRti(long time) throws InternalFederateException {
+        List<String> routeFileVehicles = getRouteFileVehicles();
+        String vehicleTypeId;
+        VehicleType vehicleType;
+        for (String vehicleId : routeFileVehicles) {
+            vehiclesAddedViaRouteFile.add(vehicleId);
+            vehicleTypeId = bridge.getVehicleControl().getVehicleTypeId(vehicleId);
+            vehicleType = bridge.getVehicleControl().getVehicleType(vehicleTypeId);
+            try {
+                rti.triggerInteraction(new ScenarioVehicleRegistration(time, vehicleId, vehicleType));
+            } catch (IllegalValueException e) {
+                throw new InternalFederateException(e);
+            }
+            if (sumoConfig.subscribeToAllVehicles) { // this is required as vehicles with no apps can't be subscribed to otherwise
+                bridge.getSimulationControl().subscribeForVehicle(vehicleId, time, this.getEndTime());
+            }
+        }
+    }
+
+    private List<String> getRouteFileVehicles() throws InternalFederateException {
+        return bridge.getSimulationControl().getDepartedVehicles().stream()
+                .filter(v -> !vehiclesAddedViaRti.contains(v)) // all vehicles not added via MOSAIC are added by SUMO
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Vehicles of the notYetRegisteredVehicles list will be added by this function
+     * or cached again for the next time.
+     *
+     * @param time Current system time
+     */
+    abstract void flushNotYetAddedVehicles(long time) throws InternalFederateException;
 
     /**
      * Reads the route from the SUMO Traci.
@@ -1355,20 +1398,24 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
      * @param time Current time
      */
     private void initializeTrafficLights(long time) throws InternalFederateException, IOException, IllegalValueException {
-        List<String> tlgIds = bridge.getSimulationControl().getTrafficLightGroupIds();
+        List<String> trafficLightGroupIds = bridge.getSimulationControl().getTrafficLightGroupIds();
 
-        List<TrafficLightGroup> tlgs = new ArrayList<>();
-        Map<String, Collection<String>> tlgLaneMap = new HashMap<>();
-        for (String tlgId : tlgIds) {
+        List<TrafficLightGroup> trafficLightGroups = new ArrayList<>();
+        Map<String, Collection<String>> trafficLightGroupLaneMap = new HashMap<>();
+        for (String trafficLightGroupId : trafficLightGroupIds) {
             try {
-                tlgs.add(bridge.getTrafficLightControl().getTrafficLightGroup(tlgId));
-                Collection<String> ctrlLanes = bridge.getTrafficLightControl().getControlledLanes(tlgId);
-                tlgLaneMap.put(tlgId, ctrlLanes);
+                TrafficLightGroup trafficLightGroup = bridge.getTrafficLightControl().getTrafficLightGroup(trafficLightGroupId);
+                if (trafficLightGroup == null) {  // Reading traffic light groups doesn't work for railway signals
+                    continue;
+                }
+                trafficLightGroups.add(trafficLightGroup);
+                Collection<String> ctrlLanes = bridge.getTrafficLightControl().getControlledLanes(trafficLightGroupId);
+                trafficLightGroupLaneMap.put(trafficLightGroupId, ctrlLanes);
             } catch (InternalFederateException e) {
-                log.warn("Could not add traffic light {} to simulation. Skipping.", tlgId);
+                log.warn("Could not add traffic light {} to simulation. Skipping.", trafficLightGroupId);
             }
         }
-        Interaction stlRegistration = new ScenarioTrafficLightRegistration(time, tlgs, tlgLaneMap);
+        Interaction stlRegistration = new ScenarioTrafficLightRegistration(time, trafficLightGroups, trafficLightGroupLaneMap);
         rti.triggerInteraction(stlRegistration);
     }
 
@@ -1415,6 +1462,13 @@ public abstract class AbstractSumoAmbassador extends AbstractFederateAmbassador 
                 "--remote-port", Integer.toString(port),
                 "--step-length", String.format(Locale.ENGLISH, "%.2f", stepSize)
         );
+
+        // if SUMO_HOME is not set, the XML input validation in SUMO might fail as no XSDs are available.
+        // Therefore, we disable XML validation if SUMO_HOME is not set.
+        if (StringUtils.isBlank(System.getenv("SUMO_HOME"))) {
+            args.add("--xml-validation");
+            args.add("never");
+        }
 
         if (sumoConfig.additionalSumoParameters != null) {
             args.addAll(Arrays.asList(StringUtils.split(sumoConfig.additionalSumoParameters.trim(), " ")));

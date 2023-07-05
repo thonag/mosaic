@@ -17,9 +17,11 @@ package org.eclipse.mosaic.fed.sumo.bridge.facades;
 
 import org.eclipse.mosaic.fed.sumo.bridge.Bridge;
 import org.eclipse.mosaic.fed.sumo.bridge.CommandException;
+import org.eclipse.mosaic.fed.sumo.bridge.SumoVersion;
 import org.eclipse.mosaic.fed.sumo.bridge.api.InductionLoopSubscribe;
 import org.eclipse.mosaic.fed.sumo.bridge.api.LaneAreaSubscribe;
 import org.eclipse.mosaic.fed.sumo.bridge.api.LaneGetLength;
+import org.eclipse.mosaic.fed.sumo.bridge.api.LaneGetShape;
 import org.eclipse.mosaic.fed.sumo.bridge.api.LaneSetAllow;
 import org.eclipse.mosaic.fed.sumo.bridge.api.LaneSetDisallow;
 import org.eclipse.mosaic.fed.sumo.bridge.api.LaneSetMaxSpeed;
@@ -28,6 +30,7 @@ import org.eclipse.mosaic.fed.sumo.bridge.api.SimulationGetTrafficLightIds;
 import org.eclipse.mosaic.fed.sumo.bridge.api.SimulationSimulateStep;
 import org.eclipse.mosaic.fed.sumo.bridge.api.TrafficLightSubscribe;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleAdd;
+import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleGetTeleportingList;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetRemove;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSetUpdateBestLanes;
 import org.eclipse.mosaic.fed.sumo.bridge.api.VehicleSubscribe;
@@ -57,6 +60,7 @@ import org.eclipse.mosaic.lib.objects.trafficlight.TrafficLightGroupInfo;
 import org.eclipse.mosaic.lib.objects.trafficlight.TrafficLightState;
 import org.eclipse.mosaic.lib.objects.vehicle.Consumptions;
 import org.eclipse.mosaic.lib.objects.vehicle.Emissions;
+import org.eclipse.mosaic.lib.objects.vehicle.PublicTransportData;
 import org.eclipse.mosaic.lib.objects.vehicle.SurroundingVehicle;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleConsumptions;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleData;
@@ -65,6 +69,7 @@ import org.eclipse.mosaic.lib.objects.vehicle.VehicleSensors;
 import org.eclipse.mosaic.lib.objects.vehicle.VehicleSignals;
 import org.eclipse.mosaic.lib.objects.vehicle.sensor.DistanceSensor;
 import org.eclipse.mosaic.lib.objects.vehicle.sensor.RadarSensor;
+import org.eclipse.mosaic.lib.util.objects.Position;
 import org.eclipse.mosaic.rti.TIME;
 import org.eclipse.mosaic.rti.api.InternalFederateException;
 
@@ -80,6 +85,12 @@ import java.util.Map;
 
 public class SimulationFacade {
 
+    /**
+     * Density of vehicle gasoline in g/m^3. Since 1.14.0 SUMO returns
+     * fuel consumptions in mg, thus we convert it back to ml for compatibility.
+     */
+    private final static double FUEL_DENSITY = 0.74; // g/m^3
+
     private final Logger log = LoggerFactory.getLogger(this.getClass());
 
     private final Bridge bridge;
@@ -90,6 +101,7 @@ public class SimulationFacade {
     private final SimulationGetTrafficLightIds getTrafficLightIds;
     private final VehicleAdd vehicleAdd;
     private final VehicleSetRemove remove;
+    private final VehicleGetTeleportingList getTeleportingList;
 
 
     private final VehicleSubscribe vehicleSubscribe;
@@ -104,10 +116,16 @@ public class SimulationFacade {
     private final LaneSetMaxSpeed laneSetMaxSpeed;
 
     private final LaneGetLength laneGetLength;
+    private final LaneGetShape laneGetShape;
 
     private final Map<String, InductionLoop> inductionLoops = new HashMap<>();
     private final Map<String, SumoVehicleState> sumoVehicles = new HashMap<>();
 
+    /**
+     * This list is used to cache teleporting vehicles. It is only filled if at least one vehicle is potentially teleporting
+     * and reset to {@code null} after each time step.
+     */
+    private List<String> currentTeleportingList;
 
     private static class SumoVehicleState {
         private final String id;
@@ -128,7 +146,7 @@ public class SimulationFacade {
             return lastVehicleData != currentVehicleData && currentVehicleData != null;
         }
 
-        private boolean isRemoved() {
+        private boolean isNotUpdated() {
             return lastVehicleData != null && currentVehicleData == lastVehicleData;
         }
     }
@@ -158,6 +176,7 @@ public class SimulationFacade {
         this.getTrafficLightIds = bridge.getCommandRegister().getOrCreate(SimulationGetTrafficLightIds.class);
         this.vehicleAdd = bridge.getCommandRegister().getOrCreate(VehicleAdd.class);
         this.remove = bridge.getCommandRegister().getOrCreate(VehicleSetRemove.class);
+        this.getTeleportingList = bridge.getCommandRegister().getOrCreate(VehicleGetTeleportingList.class);
 
         this.inductionloopSubscribe = bridge.getCommandRegister().getOrCreate(InductionLoopSubscribe.class);
         this.laneAreaSubscribe = bridge.getCommandRegister().getOrCreate(LaneAreaSubscribe.class);
@@ -169,6 +188,7 @@ public class SimulationFacade {
         this.laneSetMaxSpeed = bridge.getCommandRegister().getOrCreate(LaneSetMaxSpeed.class);
 
         this.laneGetLength = bridge.getCommandRegister().getOrCreate(LaneGetLength.class);
+        this.laneGetShape = bridge.getCommandRegister().getOrCreate(LaneGetShape.class);
 
         this.vehicleSubscribeSurrounding = bridge.getCommandRegister().getOrCreate(VehicleSubscribeSurroundingVehicle.class);
         this.vehicleSubscriptionFilterFieldOfVision = bridge.getCommandRegister().getOrCreate(VehicleSubscriptionSetFieldOfVision.class);
@@ -360,14 +380,28 @@ public class SimulationFacade {
     /**
      * Gets length of a lane on an edge.
      *
-     * @param laneIndex the id of the lane. Must be known to the simulation
+     * @param laneId The id of the lane. Must be known to the simulation.
      * @throws InternalFederateException if the length of the wanted lane on the wanted edge couldn't be retrieved
      */
-    public final double getLengthOfLane(String edgeId, int laneIndex) throws InternalFederateException {
+    public final double getLengthOfLane(String laneId) throws InternalFederateException {
         try {
-            return laneGetLength.execute(bridge, edgeId, laneIndex);
+            return laneGetLength.execute(bridge, laneId);
         } catch (CommandException e) {
-            throw new InternalFederateException(String.format("Could not retrieve length of lane %s (lane %d)", edgeId, laneIndex), e);
+            throw new InternalFederateException(String.format("Could not retrieve length of lane %s", laneId), e);
+        }
+    }
+
+    /**
+     * Gets the shape of a lane, which is used for extracting the stop-lines of lanes.
+     *
+     * @param laneId The id of the lane. Must be known to the simulation.
+     * @throws InternalFederateException if the length of the wanted lane on the wanted edge couldn't be retrieved
+     */
+    public final List<Position> getShapeOfLane(String laneId) throws InternalFederateException {
+        try {
+            return laneGetShape.execute(bridge, laneId);
+        } catch (CommandException e) {
+            throw new InternalFederateException(String.format("Could not retrieve shape of lane %s", laneId), e);
         }
     }
 
@@ -375,7 +409,7 @@ public class SimulationFacade {
      * Enables the calculation of distance sensor values for the given vehicle.
      */
     public void configureDistanceSensors(String vehicleId, double maximumLookahead, boolean front, boolean rear) {
-        SumoVehicleState vehicleState = getVehicleState(vehicleId);
+        SumoVehicleState vehicleState = getOrCreateVehicleState(vehicleId);
         if (front) {
             vehicleState.frontSensorDistance = maximumLookahead > 0 ? maximumLookahead : null;
         }
@@ -456,6 +490,8 @@ public class SimulationFacade {
             final TrafficDetectorUpdates trafficDetectorUpdates = new TrafficDetectorUpdates(time, updatedLaneAreas, updatedInductionLoops);
             final TrafficLightUpdates trafficLightUpdates = new TrafficLightUpdates(time, trafficLightGroupInfos);
 
+            currentTeleportingList = null; // reset cached teleporting list for this time step
+
             return new TraciSimulationStepResult(vehicleUpdates, trafficDetectorUpdates, trafficLightUpdates);
         } catch (CommandException e) {
             throw new InternalFederateException("Could not properly simulate step and read subscriptions", e);
@@ -465,10 +501,10 @@ public class SimulationFacade {
     private SumoVehicleState processVehicleSubscriptionResult(final long time,
                                                               final VehicleSubscriptionResult veh,
                                                               final Map<String, String> vehicleSegmentInfo
-    ) {
+    ) throws CommandException, InternalFederateException {
 
-        final SumoVehicleState sumoVehicle = getVehicleState(veh.id);
-        final VehicleStopMode vehicleStopMode = decodeStopMode(veh.stoppedStateEncoded);
+        final SumoVehicleState sumoVehicle = getOrCreateVehicleState(veh.id);
+        final VehicleStopMode vehicleStopMode = VehicleStopMode.fromSumoInt(veh.stoppedStateEncoded);
         final boolean isParking = vehicleStopMode.isParking();
         final boolean hasInvalidPosition = veh.position == null || !veh.position.isValid();
         final boolean isNewVehicle = sumoVehicle.lastVehicleData == null;
@@ -477,17 +513,26 @@ public class SimulationFacade {
         final boolean isWaitingToLeaveParking = !isNewVehicle && hasInvalidPosition // check for "waiting" state
                 && sumoVehicle.lastVehicleData.getVehicleStopMode().isParking(); // check if was parked
 
-        if (hasInvalidPosition && isNewVehicle) {
-            /* if a vehicle has not yet been simulated but loaded by SUMO, the vehicle's position will be invalid.
-             * We ignore this vehicle until it's added to the simulation. */
-            log.debug("Skip vehicle {} which is loaded but not yet simulated.", veh.id);
-            return null;
-        }
-
         if (hasInvalidPosition && !isWaitingToLeaveParking) {
-            /* If the vehicle, however,  has already been in the simulation (lastVehicleData was valid),
-             * then there seems to be an error and the vehicle state will not be updated, resulting in a removal of the vehicle. */
-            log.warn("vehicle {} has no valid position and will be removed.", veh.id);
+            if (isNewVehicle) {
+                /* If a vehicle has not yet been simulated but loaded by SUMO, the vehicle's position will be invalid.
+                 * We ignore this vehicle until it's added to the simulation. */
+                log.debug("Skip vehicle {} which is loaded but not yet simulated.", veh.id);
+                return null;
+            }
+            if (currentTeleportingList == null) {  // we call this only once per simulation step if at least one vehicle is teleporting
+                currentTeleportingList = getTeleportingList.execute(bridge);
+            }
+            boolean isTeleporting = currentTeleportingList.contains(veh.id);
+            if (isTeleporting) {
+                /* If the vehicle is teleporting we don't stop the subscription. However, the state of the vehicle won't
+                be updated until the teleport is finished, as we cannot be sure of the behaviour during teleporting. */
+                sumoVehicle.currentVehicleData = new VehicleData.Builder(time, veh.id).copyFrom(sumoVehicle.lastVehicleData)
+                        .stopped(VehicleStopMode.NOT_STOPPED) // teleporting vehicles are not stopped to differentiate from stopped vehicles
+                        .create();
+                return sumoVehicle;
+            }
+            log.warn("Vehicle {} has no valid position and will be removed.", veh.id);
             return sumoVehicle;
         }
 
@@ -513,6 +558,9 @@ public class SimulationFacade {
                     .stopped(vehicleStopMode)
                     .sensors(createSensorData(sumoVehicle, veh.leadingVehicle, veh.followerVehicle, veh.minGap))
                     .laneArea(vehicleSegmentInfo.get(veh.id));
+            if (sumoConfiguration.subscriptions != null && sumoConfiguration.subscriptions.contains(CSumo.SUBSCRIPTION_TRAINS)) {
+                vehicleDataBuilder.additional(extractTrainData(veh));
+            }
             if (isParking) {
                 if (!sumoVehicle.lastVehicleData.isStopped()) {
                     log.info("Vehicle {} has parked at {} (edge: {})", veh.id, veh.position, veh.edgeId);
@@ -523,9 +571,8 @@ public class SimulationFacade {
                         // for parking vehicles, there are no consumptions and emissions to measure
                         .consumptions(new VehicleConsumptions(
                                 new Consumptions(0d), sumoVehicle.lastVehicleData.getVehicleConsumptions().getAllConsumptions())
-                        ).emissions(
-                                new VehicleEmissions(new Emissions(0d, 0d, 0d, 0d, 0d),
-                                        sumoVehicle.lastVehicleData.getVehicleEmissions().getAllEmissions()));
+                        ).emissions(new VehicleEmissions(
+                                new Emissions(0d, 0d, 0d, 0d, 0d), sumoVehicle.lastVehicleData.getVehicleEmissions().getAllEmissions()));
             } else {
                 vehicleDataBuilder
                         .road(getRoadPosition(veh, sumoVehicle.lastVehicleData))
@@ -538,11 +585,15 @@ public class SimulationFacade {
         return sumoVehicle;
     }
 
-    private List<String> findRemovedVehicles(long time) {
+    private PublicTransportData extractTrainData(VehicleSubscriptionResult veh) {
+        return new PublicTransportData.Builder().withLineId(veh.line).nextStops(veh.nextStops).build();
+    }
+
+    private List<String> findRemovedVehicles(long time) throws CommandException, InternalFederateException {
         final List<String> removedVehicles = new LinkedList<>();
         for (Iterator<SumoVehicleState> vehicleIt = sumoVehicles.values().iterator(); vehicleIt.hasNext(); ) {
             SumoVehicleState vehicle = vehicleIt.next();
-            if (vehicle.isRemoved()) {
+            if (vehicle.isNotUpdated()) {
                 removedVehicles.add(vehicle.id);
                 vehicleIt.remove();
                 log.info("Removed vehicle \"{}\" at simulation time {}ns", vehicle.id, time);
@@ -553,13 +604,15 @@ public class SimulationFacade {
 
 
     private void processVehicleContextSubscriptionResult(VehicleContextSubscriptionResult contextSubscriptionResult) {
-        SumoVehicleState sumoVehicleState = getVehicleState(contextSubscriptionResult.id);
+        SumoVehicleState sumoVehicleState = getOrCreateVehicleState(contextSubscriptionResult.id);
         for (VehicleSubscriptionResult vehInSight : contextSubscriptionResult.contextSubscriptions) {
             if (contextSubscriptionResult.id.equals(vehInSight.id)) {
                 continue;
             }
             sumoVehicleState.currentVehicleData.getVehiclesInSight().add(
-                    new SurroundingVehicle(vehInSight.id, vehInSight.position, vehInSight.speed, vehInSight.heading)
+                    new SurroundingVehicle(vehInSight.id, vehInSight.position, vehInSight.speed,
+                            vehInSight.heading, vehInSight.edgeId, vehInSight.laneIndex,
+                            vehInSight.length, vehInSight.width, vehInSight.height)
             );
         }
     }
@@ -691,7 +744,7 @@ public class SimulationFacade {
         return vehicleToSegmentMap;
     }
 
-    private SumoVehicleState getVehicleState(String id) {
+    private SumoVehicleState getOrCreateVehicleState(String id) {
         return sumoVehicles.computeIfAbsent(id, SumoVehicleState::new);
     }
 
@@ -703,7 +756,7 @@ public class SimulationFacade {
      * @return The vehicle consumption.
      */
     private VehicleConsumptions calculateConsumptions(VehicleSubscriptionResult veh, VehicleData lastVehicleData) {
-        final Consumptions currentConsumptions = new Consumptions(fixConsumptionValue(veh.fuel));
+        final Consumptions currentConsumptions = new Consumptions(fixFuelConsumptionValue(veh.fuel));
         if (lastVehicleData != null && lastVehicleData.getVehicleConsumptions() != null) {
             return new VehicleConsumptions(
                     currentConsumptions,
@@ -713,8 +766,11 @@ public class SimulationFacade {
         return new VehicleConsumptions(currentConsumptions, currentConsumptions);
     }
 
-    private double fixConsumptionValue(double consumption) {
-        return consumption * (sumoConfiguration.updateInterval / 1000d);
+    private double fixFuelConsumptionValue(double consumption) {
+        if (bridge.getCurrentVersion().isGreaterOrEqualThan(SumoVersion.SUMO_1_14_x)) {
+            return fixEmissionValue(consumption / FUEL_DENSITY / 1000d);
+        }
+        return fixEmissionValue(consumption);
     }
 
     /**
@@ -726,11 +782,11 @@ public class SimulationFacade {
      */
     private VehicleEmissions calculateEmissions(VehicleSubscriptionResult veh, VehicleData lastVehicleData) {
         final Emissions currentEmissions = new Emissions(
-                fixConsumptionValue(veh.co2),
-                fixConsumptionValue(veh.co),
-                fixConsumptionValue(veh.hc),
-                fixConsumptionValue(veh.pmx),
-                fixConsumptionValue(veh.nox));
+                fixEmissionValue(veh.co2),
+                fixEmissionValue(veh.co),
+                fixEmissionValue(veh.hc),
+                fixEmissionValue(veh.pmx),
+                fixEmissionValue(veh.nox));
         if (lastVehicleData != null && lastVehicleData.getVehicleEmissions() != null) {
             return new VehicleEmissions(
                     currentEmissions,
@@ -738,6 +794,10 @@ public class SimulationFacade {
             );
         }
         return new VehicleEmissions(currentEmissions, currentEmissions);
+    }
+
+    private double fixEmissionValue(double consumption) {
+        return consumption * (sumoConfiguration.updateInterval / 1000d);
     }
 
     /**
@@ -793,24 +853,6 @@ public class SimulationFacade {
         return new SimpleRoadPosition(edgeId, laneIndex, offset, lateralLanePosition);
     }
 
-    /**
-     * Getter for the stop mode (stop, park).
-     *
-     * @param stoppedStateEncoded Encoded number indicating the stop mode.
-     * @return The stop mode.
-     */
-    private VehicleStopMode decodeStopMode(int stoppedStateEncoded) {
-        if ((stoppedStateEncoded & 0b10000000) > 0) {
-            return VehicleStopMode.PARK_IN_PARKING_AREA;
-        }
-        if ((stoppedStateEncoded & 0b0010) > 0) {
-            return VehicleStopMode.PARK_ON_ROADSIDE;
-        }
-        if ((stoppedStateEncoded & 0b0001) > 0) {
-            return VehicleStopMode.STOP;
-        }
-        return VehicleStopMode.NOT_STOPPED;
-    }
 
     /**
      * This method decodes the vehicle signals.

@@ -47,7 +47,6 @@ import org.eclipse.mosaic.rti.api.InternalFederateException;
 import org.eclipse.mosaic.rti.api.RtiAmbassador;
 
 import org.apache.commons.lang3.ObjectUtils;
-import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -241,8 +240,7 @@ public class SpawningFramework {
         }
 
         if (mappingConfiguration.vehicles == null || !spawnersExist) {
-            LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME)
-                    .warn("You didn't define any spawners in your mapping config. Only external vehicles will be simulated.");
+            LOG.info("No vehicle spawners defined in mapping config. Only external vehicles will be simulated.");
         }
 
         // OD-Matrices
@@ -359,23 +357,23 @@ public class SpawningFramework {
      */
     private void completeSpawnerDefinitions() {
         for (RoadSideUnitSpawner rsu : rsus) {
-            rsu.fillInPrototype(getPrototypeByName(rsu.getPrototype()));
+            rsu.fillInPrototype(getPrototypeByName(rsu.getPrototypeName()));
         }
 
         for (TrafficManagementCenterSpawner tmc : tmcs) {
-            tmc.fillInPrototype(getPrototypeByName(tmc.getPrototype()));
+            tmc.fillInPrototype(getPrototypeByName(tmc.getPrototypeName()));
         }
 
         for (ServerSpawner server : servers) {
-            server.fillInPrototype(getPrototypeByName(server.getPrototype()));
+            server.fillInPrototype(getPrototypeByName(server.getPrototypeName()));
         }
 
         for (TrafficLightSpawner tl : tls.values()) {
-            tl.fillInPrototype(getPrototypeByName(tl.getPrototype()));
+            tl.fillInPrototype(getPrototypeByName(tl.getPrototypeName()));
         }
 
         for (ChargingStationSpawner chargingStation : chargingStations) {
-            chargingStation.fillInPrototype(getPrototypeByName(chargingStation.getPrototype()));
+            chargingStation.fillInPrototype(getPrototypeByName(chargingStation.getPrototypeName()));
         }
 
         // If adjustStartingTimes is configured, only the end time is relevant for remaining spawners.
@@ -460,25 +458,18 @@ public class SpawningFramework {
     }
 
     private void initTrafficLights(long time, RtiAmbassador rti, RandomNumberGenerator rng) throws InternalFederateException {
-
-        LOG.debug(
-                "tl 0: size={},{}",
-                scenarioTrafficLightRegistration.getTrafficLightGroups().size(),
-                scenarioTrafficLightRegistration.getLanesControlledByGroups().keySet().size()
-        );
-
         WeightedSelector<TrafficLightSpawner> selector = null;
         List<TrafficLightSpawner> itemsWithWeight = tls.values().stream().filter(tl -> tl.getWeight() != 0).collect(Collectors.toList());
         if (!itemsWithWeight.isEmpty()) {
             selector = new StochasticSelector<>(itemsWithWeight, rng);
         }
 
-        for (TrafficLightGroup tl : scenarioTrafficLightRegistration.getTrafficLightGroups()) {
+        for (TrafficLightGroup tlGroup : scenarioTrafficLightRegistration.getTrafficLightGroups()) {
             // do we have a specific overwrite?
             TrafficLightSpawner prototype = null;
-            for (TrafficLightSpawner value : tls.values()) {
-                if ((value.getTlName() != null) && (value.getTlName().contentEquals(tl.getGroupId()))) {
-                    prototype = value;
+            for (TrafficLightSpawner spawner : tls.values()) {
+                if ((spawner.getTlName() != null) && (spawner.getTlName().contentEquals(tlGroup.getGroupId()))) {
+                    prototype = spawner;
                 }
             }
 
@@ -489,31 +480,26 @@ public class SpawningFramework {
 
             List<String> apps;
 
-            String name;
+            String name = UnitNameGenerator.nextTlName();
             String group;
             if (prototype != null) {
-                apps = prototype.getAppList();
-                group = ObjectUtils.defaultIfNull(prototype.getGroup(), tl.getGroupId());
-                name = UnitNameGenerator.nextTlName();
+                apps = prototype.getApplications();
+                group = ObjectUtils.defaultIfNull(prototype.getGroup(), tlGroup.getGroupId());
             } else {
                 apps = new ArrayList<>();
                 group = null;
-                name = tl.getGroupId();
             }
 
-            TrafficLightRegistration interaction = new TrafficLightRegistration(
-                    time, name, group, apps, tl,
-                    scenarioTrafficLightRegistration.getLanesControlledByGroups().get(tl.getGroupId())
+            TrafficLightRegistration tlRegistration = new TrafficLightRegistration(
+                    time, name, group, apps, tlGroup,
+                    scenarioTrafficLightRegistration.getLanesControlledByGroups().get(tlGroup.getGroupId())
             );
-            if (prototype != null) {
-                LOG.info("Creating Traffic Light: name={}, apps=[{}]", tl.getGroupId(), StringUtils.join(apps, ","));
-            } else {
-                LOG.info("Creating Traffic Light: name={}, apps=[]", tl.getGroupId());
-            }
+            LOG.info("Creating Traffic Light Group: name={},tlGroupId={},apps={}", name, tlGroup.getGroupId(), apps);
             try {
-                rti.triggerInteraction(interaction);
+                rti.triggerInteraction(tlRegistration);
             } catch (IllegalValueException e) {
-                LOG.error("Couldn't send a interaction about registering a traffic light.", e);
+                LOG.error("Couldn't send {}, for tlGroup={}",
+                        TrafficLightRegistration.class.getSimpleName(), tlRegistration.getTrafficLightGroup().getGroupId(), e);
                 throw new InternalFederateException(e);
             }
         }

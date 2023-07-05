@@ -38,6 +38,7 @@ import org.eclipse.mosaic.lib.objects.trafficlight.TrafficLightGroup;
 import org.eclipse.mosaic.lib.objects.trafficlight.TrafficLightProgram;
 import org.eclipse.mosaic.lib.objects.trafficlight.TrafficLightProgramPhase;
 import org.eclipse.mosaic.lib.objects.trafficlight.TrafficLightState;
+import org.eclipse.mosaic.lib.util.objects.Position;
 import org.eclipse.mosaic.rti.api.InternalFederateException;
 
 import com.google.common.collect.Iterables;
@@ -183,7 +184,9 @@ public class TrafficLightFacade {
                             controlledLinks,
                             junctionPosition
                     );
-
+            if (trafficLights.isEmpty()) { // railway signals can be defined without a phase logic and will be ignored
+                return null;
+            }
             return new TrafficLightGroup(trafficLightGroupId, trafficLightPrograms, trafficLights);
         } catch (CommandException e) {
             throw new InternalFederateException(e);
@@ -198,20 +201,31 @@ public class TrafficLightFacade {
             List<TrafficLightGetControlledLinks.TrafficLightControlledLink> controlledLinks,
             GeoPoint junctionPosition
     ) {
-
+        if (currentProgram.getPhases().isEmpty()) {  // default railway signals don't have phases and won't be added to simulation
+            return new ArrayList<>();
+        }
         List<TrafficLight> trafficLights = new ArrayList<>();
         int index = 0;
         for (TrafficLightState state : currentProgram.getCurrentPhase().getStates()) {
             final String incoming, outgoing;
+            GeoPoint trafficLightPosition;
             if (index >= controlledLinks.size()) {
                 incoming = null;
                 outgoing = null;
+                trafficLightPosition = junctionPosition;
                 log.warn("There seem to be more states than links controlled by the TrafficLightProgram.");
             } else {
                 incoming = controlledLinks.get(index).getIncoming();
                 outgoing = controlledLinks.get(index).getOutgoing();
+                try {
+                    // try to get exact traffic light position
+                    List<Position> laneShape = bridge.getSimulationControl().getShapeOfLane(incoming);
+                    trafficLightPosition = Iterables.getLast(laneShape).getGeographicPosition();
+                } catch (Exception e) {
+                    trafficLightPosition = junctionPosition;
+                }
             }
-            trafficLights.add(new TrafficLight(index++, junctionPosition, incoming, outgoing, state));
+            trafficLights.add(new TrafficLight(index++, trafficLightPosition, incoming, outgoing, state));
         }
         return trafficLights;
     }

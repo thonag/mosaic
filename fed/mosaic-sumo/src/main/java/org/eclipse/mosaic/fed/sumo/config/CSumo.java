@@ -35,7 +35,7 @@ public class CSumo implements Serializable {
 
     /**
      * The Interval after which positions are published.
-     * Define the size of one simulation step in sumo (minimal value: 100).
+     * Define the size of one simulation step in sumo (minimal value: 1).
      * The default value is 1000 (1s). Unit: [ms].
      */
     @JsonAdapter(TimeFieldAdapter.LegacyMilliSeconds.class)
@@ -65,7 +65,7 @@ public class CSumo implements Serializable {
      * setting time-to-teleport to 0. This avoid unmoved "vehicles" (in our case
      * also RSUs) being removed from simulation.
      */
-    public String additionalSumoParameters = " --time-to-teleport 0  --seed 100000";
+    public String additionalSumoParameters = "--time-to-teleport 0 --seed 100000";
 
     /**
      * Defines the time window in seconds in which vehicle counts on induction loops
@@ -120,9 +120,14 @@ public class CSumo implements Serializable {
     public final static String SUBSCRIPTION_EMISSIONS = "emissions";
 
     /**
-     * Subscription identifier for subscribing for leader and follower information for each vehicle.
+     * Subscription identifier for subscribing to leader and follower information for each vehicle.
      */
     public final static String SUBSCRIPTION_LEADER = "leader";
+
+    /**
+     * Subscription identifier for subscribing to train information such next stops and line information.
+     */
+    public final static String SUBSCRIPTION_TRAINS = "trains";
 
     /**
      * The default lane width to be used when adding traffic signs per
